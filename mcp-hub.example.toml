@@ -1,0 +1,58 @@
+# Example configuration for `mcp-hub`.
+#
+# The file is meant to show both the compact default shape and a few advanced
+# options without turning the example into an exhaustive reference.
+
+# Minimal upstream: only process launch information.
+[servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+# Read-focused GitHub view with a visible outward prefix and wildcard allowlist.
+[servers.github_read]
+prefix = "gh"
+command = "uvx"
+args = ["mcp-server-github"]
+env = {
+  GITHUB_TOKEN = "${GITHUB_TOKEN}",
+  GITHUB_OWNER = "acme",
+  GITHUB_REPO = "platform",
+}
+
+[servers.github_read.tools]
+include = [
+  "list_*",
+  "read_*",
+  "search_*",
+  "create_comment",
+]
+
+[servers.github_read.tools.overrides.create_comment]
+read_only = false
+open_world = true
+
+# A second copy of the same upstream binary with different outward naming,
+# different tool curation, and stricter safety hints for destructive actions.
+[servers.github_admin]
+prefix = "gh_admin"
+command = "uvx"
+args = ["mcp-server-github", "--mode", "admin"]
+env = {
+  GITHUB_TOKEN = "${GITHUB_ADMIN_TOKEN}",
+  GITHUB_OWNER = "acme",
+  GITHUB_REPO = "platform",
+}
+
+[servers.github_admin.tools]
+exclude = [
+  "list_*",
+  "read_*",
+  "search_*",
+]
+
+[servers.github_admin.tools.overrides.delete_issue]
+destructive = true
+
+[servers.github_admin.tools.overrides.create_release]
+destructive = true
+open_world = true
