@@ -4,10 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Validate OpenSpec artifacts through `prek` locally and in CI.
+
 ### Changed
 
 - Clarify the stdio single-client session model and upstream failure behavior in the README.
 - Migrate the project OpenSpec documents to the OpenSpec 1.6.0 baseline format.
+- Document the Conventional Commits convention for project commits.
+- Synchronize the project OpenSpec documentation with the current README.
+- Document planned and intentionally unsupported tool, upstream diagnostic, and remote
+  transport behaviour in the README roadmap.
+- Simplify prebuilt-binary download instructions while retaining checksum and provenance
+  verification guidance.
+- Document that forwarding deprecated MCP Logging messages is not planned.
 
 ## [0.2.3] - 2026-07-26
 
