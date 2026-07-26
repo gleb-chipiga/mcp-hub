@@ -24,8 +24,11 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy, rustfmt
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Run formatting hook
+        uses: j178/prek-action@53276d8b0d10f8b6672aa85b4588c6921d0370cc # v2.0.1
+        with:
+          extra-args: cargo-fmt --all-files
+          prek-version: 0.2.25
 
   clippy:
     name: Clippy
@@ -42,8 +45,11 @@ jobs:
           components: clippy, rustfmt
       - name: Restore Cargo cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Run Clippy hook
+        uses: j178/prek-action@53276d8b0d10f8b6672aa85b4588c6921d0370cc # v2.0.1
+        with:
+          extra-args: cargo-clippy --all-files
+          prek-version: 0.2.25
 
   test:
     name: Test (${{ matrix.features.name }})
@@ -53,9 +59,10 @@ jobs:
       matrix:
         features:
           - name: all features
-            arguments: --all-features
+            uses_prek: true
           - name: no default features
             arguments: --no-default-features
+            uses_prek: false
     steps:
       - name: Check out source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -68,7 +75,14 @@ jobs:
           components: clippy, rustfmt
       - name: Restore Cargo cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Run tests
+      - name: Run test hook
+        if: matrix.features.uses_prek
+        uses: j178/prek-action@53276d8b0d10f8b6672aa85b4588c6921d0370cc # v2.0.1
+        with:
+          extra-args: cargo-test --all-files
+          prek-version: 0.2.25
+      - name: Run tests without default features
+        if: ${{ !matrix.features.uses_prek }}
         run: cargo test --all-targets --locked ${{ matrix.features.arguments }}
 
   documentation:
