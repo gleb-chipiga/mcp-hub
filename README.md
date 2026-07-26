@@ -103,6 +103,40 @@ The first command-line argument is the TOML configuration path. Alternatively, s
 `MCP_HUB_CONFIG`. The hub speaks MCP over standard input/output and writes tracing
 logs to standard error.
 
+### Logging and tracing
+
+`mcp-hub` uses `tracing` and writes log records to standard error through a
+non-blocking writer. Standard output is reserved exclusively for MCP traffic; never
+send logs to standard output.
+
+By default, or when `RUST_LOG` is invalid, the filter is `info,mcp_hub=debug`:
+dependency logs at `info` and above, and hub logs at `debug` and above. Set
+`RUST_LOG` in the environment of the `mcp-hub` process to replace that filter:
+
+```bash
+# Show only warnings and errors from all crates.
+RUST_LOG=warn mcp-hub mcp-hub.example.toml
+
+# Keep normal dependency logs and enable verbose hub diagnostics.
+RUST_LOG=info,mcp_hub=debug mcp-hub mcp-hub.example.toml
+
+# Diagnose MCP transport behaviour as well.
+RUST_LOG=warn,mcp_hub=trace,rmcp=debug mcp-hub mcp-hub.example.toml
+```
+
+To retain logs when starting the binary directly, redirect standard error. The hub
+does not create log files or rotate them; use a supervisor or your system's log
+rotation for long-running processes.
+
+```bash
+mcp-hub mcp-hub.example.toml 2>> mcp-hub.log
+```
+
+When an MCP client starts `mcp-hub`, configure `RUST_LOG` in that client's process
+environment or MCP-server entry. The `[servers.<instance_id>.env]` table in the hub
+configuration is passed only to the upstream child process; it does not configure
+the hub's own tracing.
+
 ## Configuration
 
 Configuration files use TOML 1.1. They must define at least one
