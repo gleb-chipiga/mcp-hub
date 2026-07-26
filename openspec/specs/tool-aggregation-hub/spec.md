@@ -1,15 +1,34 @@
 ## ADDED Requirements
 
 ### Requirement: Hub exposes a merged outward tool inventory
-The hub SHALL present one outward MCP tool inventory composed from all configured and currently available upstream MCP servers.
+The hub SHALL construct one outward MCP tool inventory during startup discovery from
+configured upstream MCP servers that initialize successfully and return their tool
+lists.
 
 #### Scenario: Merge tools from multiple upstream servers
 - **WHEN** an inbound hub session lists tools and multiple upstream servers are available
 - **THEN** the hub returns one combined tool list containing tools from those upstream servers
 
-#### Scenario: Omit unavailable upstream tools
-- **WHEN** an inbound hub session lists tools and one or more upstream servers are unavailable
-- **THEN** the hub returns tools from available upstream servers without requiring the entire inventory request to fail
+#### Scenario: Omit upstream tools unavailable during startup discovery
+- **WHEN** one or more upstream servers cannot start, initialize, or list tools during startup discovery
+- **THEN** the hub returns tools from successfully discovered upstream servers without requiring the entire hub startup to fail
+- **AND** the hub may start with an empty tool inventory when no upstream is successfully discovered
+
+### Requirement: Hub keeps the discovered tool inventory stable for a session
+The hub SHALL retain the outward tool registry discovered during startup for the
+lifetime of the inbound session. It SHALL not probe upstream health, retry failed
+startup, reconnect an upstream, or refresh the registry automatically.
+
+#### Scenario: Upstream exits after startup discovery
+- **WHEN** an upstream server exits after its tools were added to the outward registry
+- **THEN** its tools remain in the outward tool list for the current session
+- **AND** a call to one of those tools returns an error that reports the upstream
+  transport failure
+
+#### Scenario: New hub process performs new discovery
+- **WHEN** the MCP host starts a new `mcp-hub` process
+- **THEN** the hub creates a new inbound session and independently discovers a new
+  outward tool inventory
 
 ### Requirement: Hub applies optional visible prefixes to outward tool names
 The hub SHALL expose each outward tool name either as the original upstream tool name or as `<prefix>.<tool_name>` when a visible prefix is configured for that upstream.

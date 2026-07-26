@@ -13,23 +13,24 @@ The hub SHALL validate startup configuration before initializing the outward MCP
 - **THEN** the hub may continue initialization and serve the outward MCP surface
 
 ### Requirement: Hub isolates upstream state per inbound session
-The hub SHALL treat each inbound hub session as an isolated runtime and SHALL NOT share session-local upstream state across different inbound sessions.
+The hub SHALL treat each `mcp-hub` process as one inbound stdio session with an
+isolated upstream runtime. It SHALL NOT share session-local upstream state with a
+separately launched hub process.
 
-#### Scenario: Separate inbound sessions do not share upstream session state
-- **WHEN** two different inbound hub sessions connect to the same configured upstream server
-- **THEN** the hub maintains separate upstream sessions for those inbound sessions
+#### Scenario: Separate hub processes do not share upstream session state
+- **WHEN** two MCP clients each launch `mcp-hub` with the same upstream configuration
+- **THEN** each hub process maintains separate upstream sessions
 
-#### Scenario: Closing one inbound session does not terminate another session's upstream runtime
-- **WHEN** one inbound hub session ends while another inbound hub session remains active
-- **THEN** the hub only tears down upstream state associated with the ended session
+#### Scenario: Closing one hub process does not terminate another process's upstream runtime
+- **WHEN** one `mcp-hub` process ends while another separately launched process remains active
+- **THEN** only the ended process tears down its upstream runtime
 
 ### Requirement: Hub keeps the v1 inbound transport model explicit
-The hub SHALL treat the current v1 implementation as a single-session-per-process transport shape and SHALL NOT silently extend that shape to same-process multi-session transports without adding a per-session runtime boundary.
+The hub SHALL expose one stdio MCP endpoint per process. Its standard input and
+output belong to one MCP client, so a process SHALL NOT accept multiple independent
+inbound clients.
 
-#### Scenario: Stdio v1 serves one inbound session per process
-- **WHEN** the v1 hub runs over stdio
-- **THEN** one hub process owns one inbound MCP session and one isolated upstream runtime set
-
-#### Scenario: Future multi-session transports require an explicit session factory boundary
-- **WHEN** the project adds an inbound transport that can host multiple sessions in one process
-- **THEN** that change must introduce a per-session hub-service factory or equivalent session-bound runtime initialization rather than reusing one prebuilt upstream runtime across sessions
+#### Scenario: Stdio serves one client per process
+- **WHEN** an MCP host launches the hub over stdio
+- **THEN** that hub process owns one inbound MCP session and one isolated upstream runtime set
+- **AND** a second MCP client must launch another hub process rather than connect to the existing process

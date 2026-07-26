@@ -137,6 +137,36 @@ environment or MCP-server entry. The `[servers.<instance_id>.env]` table in the 
 configuration is passed only to the upstream child process; it does not configure
 the hub's own tracing.
 
+### Operational behavior
+
+Each `mcp-hub` process serves one inbound MCP session over stdio. It creates a
+separate MCP client session for every configured upstream, so it terminates MCP on
+both sides instead of forwarding a shared session or raw JSON-RPC messages. A stdio
+process has one MCP client; multiple clients must start separate `mcp-hub` processes,
+each with its own upstream sessions.
+
+At startup, `mcp-hub` starts and initializes configured upstreams sequentially, then
+discovers their tools and fixes the outward tool inventory for that session.
+`MCP_HUB_STARTUP_TIMEOUT_MS` limits each upstream startup and tool-discovery step;
+the default is 5000 ms. It does not limit tool-call duration. Several unavailable
+upstreams can therefore delay startup by up to one timeout each.
+
+An upstream that fails to start, initialize, or list its tools is omitted from the
+current session and reported in logs. The hub continues with the remaining upstreams
+and can expose an empty tool inventory if none are available. Tool-name collisions,
+unsupported upstream tool names, and annotation overrides targeting unknown tools are
+startup errors; the hub does not start with a partial registry in those cases.
+
+This startup readiness check is not a continuous health check. `mcp-hub` does not
+retry failed startup, periodically probe upstreams, reconnect a crashed upstream, or
+refresh its tool inventory during a session. It does not set a hub-level timeout or
+retry for routed tool calls. If an already connected upstream exits, its tools remain
+listed and calls to them fail. Restarting the hub creates a new inbound session and
+new upstream sessions, which rediscover the inventory.
+
+When the outward MCP session ends, `mcp-hub` cancels all active upstream client
+sessions.
+
 ## Configuration
 
 Configuration files use TOML 1.1. They must define at least one
@@ -252,7 +282,7 @@ accepts the aliases `external`, `external_side_effect`, and `sends_external_data
 An override must use the exact original name of a tool advertised by that upstream;
 a misspelled target fails startup.
 
-### Run and startup behavior
+### Run from source
 
 Pass the configuration path as the first argument, or set `MCP_HUB_CONFIG`:
 
@@ -261,15 +291,43 @@ cargo run -- mcp-hub.toml
 MCP_HUB_CONFIG=mcp-hub.toml cargo run
 ```
 
-At startup, the hub connects to each upstream and discovers its tools. The default
-connection and discovery timeout is five seconds and can be changed with
-`MCP_HUB_STARTUP_TIMEOUT_MS`. An unavailable or timed-out upstream is omitted while
-the remaining tools stay available. Configuration errors, duplicate outward tool
-names, invalid tool names, and unknown annotation-override targets fail startup.
-
 See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 
 ## Roadmap
 
 The current implementation connects to local upstream servers over stdio only.
-Support for remote upstream MCP servers over a network transport is planned.
+
+### Next: predictable upstream failure handling
+
+- Fail startup with a clear error when no usable upstream tools remain after
+  discovery. Partial upstream availability will remain supported.
+- Emit a structured warning when a routed tool call fails, including the upstream
+  instance ID, original tool name, and transport error.
+- Add integration coverage for all-upstreams-unavailable startup, partial startup
+  failure, an upstream that exits after startup, and tool-name collisions.
+
+### Not planned
+
+The following behaviour is intentionally not planned for the current stdio-only
+model:
+
+- Periodic health checks or MCP ping loops.
+- Automatic retry after failed upstream startup, or automatic restart and reconnect
+  of an upstream process.
+- Automatic retries of `tools/call`.
+- Automatic tool-call timeouts that change call behaviour.
+- Removing, adding, or otherwise refreshing tools in the advertised registry after a
+  runtime failure.
+- Restarting `mcp-hub` itself; process supervision belongs to the MCP host or an
+  external supervisor.
+
+These behaviours create ambiguous client-visible states. A transport failure does not
+show whether a tool already performed an external side effect, and changing the
+registry after the client has discovered it requires an explicit dynamic-inventory
+protocol. A new process is the clear boundary for a new stdio MCP session.
+
+### Separate future work
+
+Support for remote upstream MCP servers over a network transport may be added as a
+separate feature. It is not a high-availability mechanism and requires an explicit
+design for transport and session boundaries before implementation.
