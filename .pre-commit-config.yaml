@@ -25,10 +25,10 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      - id: cargo-deny-advisories
-        name: cargo deny advisories
-        description: Check dependencies against RustSec advisories
-        entry: cargo +stable deny check advisories
+      - id: cargo-deny
+        name: cargo deny
+        description: Check dependency advisories and licenses
+        entry: cargo +stable deny check advisories licenses
         language: system
         pass_filenames: false
         stages: [pre-push]

@@ -92,17 +92,17 @@ jobs:
         run: cargo doc --all-features --no-deps --locked
 
   security:
-    name: Dependency security
+    name: Dependency policy
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Check RustSec advisories
+      - name: Check advisories and licenses
         uses: EmbarkStudios/cargo-deny-action@0105f7c440bc8084c17cad47fe92e63049519458 # v2.0.18
         with:
-          command: check advisories
+          command: check advisories licenses
           rust-version: 1.97.1
 
   package:
