@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Document logging and tracing configuration in the README.
+- Document tool-name collision handling and independent upstream instances in the README.
 
 ## [0.2.2] - 2026-07-26
 
