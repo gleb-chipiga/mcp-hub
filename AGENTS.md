@@ -14,3 +14,5 @@
 - Prefer specific types (NewType idiom) where justified.
 - Do not use `lib.rs` (binary only).
 - `main.rs` should stay thin, build the runtime, initialize tracing via the dedicated module before runtime entry, and delegate application behavior to a single function.
+- Use Conventional Commits for every commit message. The project convention uses a
+  lower-case type and lower-case description, for example `docs: update changelog`.
