@@ -37,6 +37,51 @@ Install the latest published release from [crates.io](https://crates.io/crates/m
 cargo install mcp-hub
 ```
 
+### Prebuilt binaries
+
+Download the matching archive from [the latest GitHub release](https://github.com/gleb-chipiga/mcp-hub/releases/latest):
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 (GNU) | `mcp-hub-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux ARM64 (GNU) | `mcp-hub-aarch64-unknown-linux-gnu.tar.xz` |
+| Linux x86_64 (static musl) | `mcp-hub-x86_64-unknown-linux-musl.tar.xz` |
+| Linux ARM64 (static musl) | `mcp-hub-aarch64-unknown-linux-musl.tar.xz` |
+| macOS Intel | `mcp-hub-x86_64-apple-darwin.tar.xz` |
+| macOS Apple silicon | `mcp-hub-aarch64-apple-darwin.tar.xz` |
+| Windows x86_64 | `mcp-hub-x86_64-pc-windows-msvc.zip` |
+
+Every archive is also available at
+`https://github.com/gleb-chipiga/mcp-hub/releases/latest/download/<archive-name>`.
+
+For example, install the static x86_64 Linux build:
+
+```bash
+curl -LO https://github.com/gleb-chipiga/mcp-hub/releases/latest/download/mcp-hub-x86_64-unknown-linux-musl.tar.xz
+tar -xJf mcp-hub-x86_64-unknown-linux-musl.tar.xz
+install -Dm755 mcp-hub-x86_64-unknown-linux-musl/mcp-hub ~/.local/bin/mcp-hub
+```
+
+On macOS, download the matching `.tar.xz` archive, unpack it with `tar -xJf`, and
+install the `mcp-hub` file from its top-level directory. On Windows, download the
+`.zip` archive, extract it, and run `mcp-hub.exe` from the extracted top-level directory.
+
+Each release also includes `sha256.sum` and a per-archive `.sha256` checksum file.
+On Linux, verify a downloaded archive with:
+
+```bash
+curl -LO https://github.com/gleb-chipiga/mcp-hub/releases/latest/download/mcp-hub-x86_64-unknown-linux-musl.tar.xz.sha256
+sha256sum -c mcp-hub-x86_64-unknown-linux-musl.tar.xz.sha256
+```
+
+### mise
+
+Install the latest GitHub Release for the current platform:
+
+```bash
+mise use -g github:gleb-chipiga/mcp-hub@latest
+```
+
 ## Run
 
 ```bash
