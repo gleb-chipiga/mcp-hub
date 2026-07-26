@@ -131,7 +131,8 @@ jobs:
           package_name="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')"
           package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           response_file="$(mktemp)"
-          if ! status_code="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' "https://crates.io/api/v1/crates/${package_name}/${package_version}")"; then
+          user_agent="${package_name}-release/${package_version} (+https://github.com/gleb-chipiga/mcp-hub)"
+          if ! status_code="$(curl --silent --show-error --retry 3 --retry-delay 2 --output "$response_file" --user-agent "$user_agent" --write-out '%{http_code}' "https://crates.io/api/v1/crates/${package_name}/${package_version}")"; then
             cat "$response_file"
             echo "Unable to determine crates.io publication status." >&2
             exit 1
