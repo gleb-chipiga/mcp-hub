@@ -326,6 +326,8 @@ model:
   single response.
 - Custom partial or streamed tool results. MCP progress notifications are sufficient
   for intermediate status, while every tool call keeps one final result.
+- Forwarding deprecated MCP Logging messages or `logging/setLevel`. Upstream
+  diagnostics will use tagged stderr output through the hub's structured tracing.
 - Expanding tool-annotation overrides beyond the supported safety-related fields.
 - Restarting `mcp-hub` itself; process supervision belongs to the MCP host or an
   external supervisor.
