@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-26
+
 ### Added
 
 - Publish Linux, macOS, and Windows binary archives in GitHub Releases.
