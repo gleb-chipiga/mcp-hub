@@ -4,6 +4,9 @@
 (MCP) aggregation server. It starts configured stdio MCP servers and exposes their
 available tools through one stdio MCP endpoint.
 
+The hub itself is lightweight and ships as a compact single binary, with no separate
+runtime service to deploy or manage.
+
 Use it to give an MCP client one curated tool inventory instead of configuring every
 upstream server separately, while retaining control over the names, availability, and
 safety metadata of exposed tools.
