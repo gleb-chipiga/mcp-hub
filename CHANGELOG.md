@@ -13,6 +13,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Add a crates.io badge to the README.
+- Clarify the currently supported MCP capabilities in the README.
 - Document direct binary downloads for every supported platform.
 - Document installation from crates.io in the README.
 

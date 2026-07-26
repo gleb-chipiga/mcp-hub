@@ -26,8 +26,8 @@ safety metadata of exposed tools.
   can override the `read_only`, `destructive`, and `open_world` annotations.
 - Allows several differently configured instances of the same upstream binary and
   omits unavailable or slow upstreams without taking down the remaining inventory.
-- Advertises only MCP tools in v1. Prompts, resources, roots, sampling, elicitation,
-  and task-required tools are intentionally out of scope.
+- Advertises only MCP tools. Prompts, resources, roots, sampling, elicitation, and
+  task-required tools are intentionally out of scope.
 
 ## Install
 
