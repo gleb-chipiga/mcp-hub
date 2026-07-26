@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+Defines discovery, aggregation, routing, and metadata semantics for the hub's
+tool-only MCP surface.
+
+## Requirements
 
 ### Requirement: Hub exposes a merged outward tool inventory
 The hub SHALL construct one outward MCP tool inventory during startup discovery from

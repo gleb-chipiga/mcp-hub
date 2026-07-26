@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+Defines startup validation, stdio session boundaries, and upstream runtime isolation
+for `mcp-hub`.
+
+## Requirements
 
 ### Requirement: Hub validates startup config before serving clients
 The hub SHALL validate startup configuration before initializing the outward MCP server, including validation of the discovered outward tool registry for ambiguity after filtering and prefix rewriting.

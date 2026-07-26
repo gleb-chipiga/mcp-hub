@@ -1,4 +1,9 @@
-## ADDED Requirements
+## Purpose
+
+Defines the TOML configuration contract for local upstream servers, including
+launch settings, tool selection, naming, and metadata overrides.
+
+## Requirements
 
 ### Requirement: Hub uses a TOML 1.1 configuration surface for upstream stdio servers
 The hub SHALL load its upstream stdio server definitions from a documented TOML 1.1 configuration file.

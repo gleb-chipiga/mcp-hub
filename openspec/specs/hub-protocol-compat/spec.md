@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Defines MCP protocol-version negotiation behavior exposed by `mcp-hub`.
+
+## Requirements
 
 ### Requirement: Hub behaves predictably across MCP protocol-version edges
 The hub SHALL negotiate supported MCP protocol versions with real peers and SHALL preserve `rmcp`'s version-selection behavior for future or otherwise unknown client versions.
