@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Clarify the stdio single-client session model and upstream failure behavior in the README.
+- Migrate the project OpenSpec documents to the OpenSpec 1.6.0 baseline format.
+
 ## [0.2.3] - 2026-07-26
 
 ### Changed
