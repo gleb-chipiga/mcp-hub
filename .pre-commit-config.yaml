@@ -32,3 +32,12 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+      - id: openspec-validate
+        name: openspec validate
+        description: Validate OpenSpec artifacts
+        entry: openspec validate --all --strict --no-interactive
+        language: node
+        language_version: 20.19.0
+        additional_dependencies: ["@fission-ai/openspec@1.6.0"]
+        pass_filenames: false
