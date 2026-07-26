@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-26
+
 ### Changed
 
 - Document logging and tracing configuration in the README.
