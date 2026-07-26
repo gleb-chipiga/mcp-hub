@@ -1,0 +1,5 @@
+[advisories]
+unmaintained = "workspace"
+unsound = "workspace"
+yanked = "warn"
+unused-ignored-advisory = "deny"
