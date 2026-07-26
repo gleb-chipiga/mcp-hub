@@ -11,21 +11,23 @@ runtime service to deploy or manage.
 
 Use it to give an MCP client one curated tool inventory instead of configuring every
 upstream server separately, while retaining control over the names, availability, and
-safety metadata of exposed tools.
+safety metadata of exposed tools. Prefixes prevent tool-name collisions, and named
+instances let the same upstream run with different settings.
 
 ## Features
 
 - Aggregates tools from multiple stdio upstream MCP servers and routes calls to the
   owning upstream.
-- Supports optional visible prefixes such as `github.search_issues`; unprefixed tools
-  keep their original names. Ambiguous outward names fail startup rather than being
-  silently shadowed.
+- Supports optional visible prefixes such as `github.search_issues` to prevent
+  tool-name collisions; unprefixed tools keep their original names. Ambiguous outward
+  names fail startup rather than being silently shadowed.
 - Curates each upstream with `include` or `exclude` patterns. `*` is a full-name,
   case-sensitive wildcard and `include` takes precedence when both are set.
 - Preserves tool descriptions, schemas, annotations, and result content; configuration
   can override the `read_only`, `destructive`, and `open_world` annotations.
-- Allows several differently configured instances of the same upstream binary and
-  omits unavailable or slow upstreams without taking down the remaining inventory.
+- Allows several independently configured instances of the same upstream binary, with
+  different arguments, environment variables, prefixes, and tool filters; unavailable
+  or slow upstreams do not take down the remaining inventory.
 - Advertises only MCP tools. Prompts, resources, roots, sampling, elicitation, and
   task-required tools are intentionally out of scope.
 
