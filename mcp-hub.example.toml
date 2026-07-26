@@ -14,7 +14,8 @@ prefix = "gh"
 command = "uvx"
 args = ["mcp-server-github"]
 env = {
-  GITHUB_TOKEN = "${GITHUB_TOKEN}",
+  # Values are passed to the child process verbatim; replace with a resolved token.
+  GITHUB_TOKEN = "replace-with-token",
   GITHUB_OWNER = "acme",
   GITHUB_REPO = "platform",
 }
@@ -38,7 +39,8 @@ prefix = "gh_admin"
 command = "uvx"
 args = ["mcp-server-github", "--mode", "admin"]
 env = {
-  GITHUB_TOKEN = "${GITHUB_ADMIN_TOKEN}",
+  # Use a distinct resolved token for the administrative upstream when appropriate.
+  GITHUB_TOKEN = "replace-with-admin-token",
   GITHUB_OWNER = "acme",
   GITHUB_REPO = "platform",
 }
