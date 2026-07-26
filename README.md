@@ -306,6 +306,31 @@ The current implementation connects to local upstream servers over stdio only.
 - Add integration coverage for all-upstreams-unavailable startup, partial startup
   failure, an upstream that exits after startup, and tool-name collisions.
 
+### Future: tool-call cancellation and progress
+
+- Forward an MCP cancellation for an in-flight `tools/call` to its owning upstream.
+  Cancellation will remain best effort because an upstream can already have
+  completed the call or may not stop its work.
+- Forward standard progress notifications when an upstream emits them for an active
+  tool call and the MCP client supplied a progress token. Tool calls will still
+  return one final result; the hub will not introduce a custom streamed-result
+  protocol.
+
+### Future: upstream diagnostics
+
+- Route each upstream's stderr into structured hub tracing with its upstream
+  instance ID. This diagnostic output will be enabled by default and share one
+  `mcp_hub::upstream_stderr` target for `RUST_LOG` filtering.
+- Allow an individual upstream configuration to disable its stderr output when it
+  is too noisy. Disabled stderr will be discarded rather than written raw to the
+  hub's stderr.
+
+### Future: remote upstream transports
+
+Support for remote upstream MCP servers over a network transport may be added as a
+separate feature. It is not a high-availability mechanism and requires an explicit
+design for transport and session boundaries before implementation.
+
 ### Not planned
 
 The following behaviour is intentionally not planned for the current stdio-only
@@ -318,6 +343,15 @@ model:
 - Automatic tool-call timeouts that change call behaviour.
 - Removing, adding, or otherwise refreshing tools in the advertised registry after a
   runtime failure.
+- Task-based tools or task status tracking. The hub only exposes ordinary
+  request-response `tools/call` operations.
+- `notifications/tools/list_changed` or a dynamic tool inventory within an active
+  stdio session.
+- Pagination for `tools/list`; the hub returns the complete startup inventory in a
+  single response.
+- Custom partial or streamed tool results. MCP progress notifications are sufficient
+  for intermediate status, while every tool call keeps one final result.
+- Expanding tool-annotation overrides beyond the supported safety-related fields.
 - Restarting `mcp-hub` itself; process supervision belongs to the MCP host or an
   external supervisor.
 
@@ -325,9 +359,3 @@ These behaviours create ambiguous client-visible states. A transport failure doe
 show whether a tool already performed an external side effect, and changing the
 registry after the client has discovered it requires an explicit dynamic-inventory
 protocol. A new process is the clear boundary for a new stdio MCP session.
-
-### Separate future work
-
-Support for remote upstream MCP servers over a network transport may be added as a
-separate feature. It is not a high-availability mechanism and requires an explicit
-design for transport and session boundaries before implementation.
