@@ -74,6 +74,15 @@ curl -LO https://github.com/gleb-chipiga/mcp-hub/releases/latest/download/mcp-hu
 sha256sum -c mcp-hub-x86_64-unknown-linux-musl.tar.xz.sha256
 ```
 
+Verify the archive provenance with [GitHub CLI](https://cli.github.com/) and its
+artifact attestation:
+
+```bash
+gh attestation verify mcp-hub-x86_64-unknown-linux-musl.tar.xz \
+  -R gleb-chipiga/mcp-hub \
+  --signer-workflow gleb-chipiga/mcp-hub/.github/workflows/release.yml
+```
+
 ### mise
 
 Install the latest GitHub Release for the current platform:
