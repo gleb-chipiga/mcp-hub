@@ -12,7 +12,7 @@ anyhow = "1"
 indexmap = { version = "2", features = ["serde"] }
 mimalloc = { version = "0.1", features = ["v3"], optional = true }
 rmcp = {
-    version = "1",
+    version = "2",
     default-features = false,
     features = [
         "client",

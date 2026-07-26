@@ -9,8 +9,8 @@ mod telemetry;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult, Meta,
-        PaginatedRequestParams, ProtocolVersion, RawResource, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult, Meta,
+        PaginatedRequestParams, ProtocolVersion, Resource, ServerCapabilities, ServerInfo,
         TaskSupport, Tool, ToolAnnotations, ToolExecution,
     },
     service::{RequestContext, RoleServer},
@@ -190,19 +190,19 @@ impl ServerHandler for MockUpstreamServer {
                     .and_then(|arguments| arguments.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "{}:{}",
                     self.server_name, message
                 ))]))
             }
-            "duplicate" => Ok(CallToolResult::success(vec![Content::text(format!(
+            "duplicate" => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "duplicate:{}",
                 self.server_name
             ))])),
             "session_counter" => {
                 let mut counter = self.session_counter.lock().await;
                 *counter += 1;
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     counter.to_string(),
                 )]))
             }
@@ -214,14 +214,14 @@ impl ServerHandler for MockUpstreamServer {
             .with_meta(Some(result_meta("read_snapshot")))),
             "delete_record" => {
                 let record_id = string_argument(&request, "record_id");
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "deleted:{}:{}",
                     self.server_name, record_id
                 ))]))
             }
             "publish_webhook" => {
                 let url = string_argument(&request, "url");
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "published:{}:{}",
                     self.server_name, url
                 ))]))
@@ -233,7 +233,7 @@ impl ServerHandler for MockUpstreamServer {
             }))
             .with_meta(Some(result_meta("structured_report")))),
             "resource_bundle" => {
-                let mut resource_link = RawResource::new(
+                let mut resource_link = Resource::new(
                     format!("memory://{}/bundle.json", self.server_name),
                     format!("{} bundle", self.server_name),
                 );
@@ -243,22 +243,22 @@ impl ServerHandler for MockUpstreamServer {
                 resource_link.size = Some(128);
 
                 Ok(CallToolResult::success(vec![
-                    Content::text(format!("bundle:{}", self.server_name)),
-                    Content::resource_link(resource_link),
-                    Content::embedded_text(
+                    ContentBlock::text(format!("bundle:{}", self.server_name)),
+                    ContentBlock::resource_link(resource_link),
+                    ContentBlock::embedded_text(
                         format!("memory://{}/embedded.txt", self.server_name),
                         format!("embedded:{}", self.server_name),
                     ),
-                    Content::image("ZmFrZS1pbWFnZS1kYXRh", "image/png"),
+                    ContentBlock::image("ZmFrZS1pbWFnZS1kYXRh", "image/png"),
                 ])
                 .with_meta(Some(result_meta("resource_bundle"))))
             }
-            "error_result" => Ok(CallToolResult::error(vec![Content::text(format!(
+            "error_result" => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "upstream-error:{}",
                 self.server_name
             ))])
             .with_meta(Some(result_meta("error_result")))),
-            "task_only" => Ok(CallToolResult::success(vec![Content::text(format!(
+            "task_only" => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "task-only:{}",
                 self.server_name
             ))])),
