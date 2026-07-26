@@ -1,5 +1,7 @@
 # mcp-hub
 
+[![crates.io](https://img.shields.io/crates/v/mcp-hub.svg?label=crates.io)](https://crates.io/crates/mcp-hub)
+
 `mcp-hub` is a tools-only [Model Context Protocol](https://modelcontextprotocol.io/)
 (MCP) aggregation server. It starts configured stdio MCP servers and exposes their
 available tools through one stdio MCP endpoint.
@@ -27,10 +29,18 @@ safety metadata of exposed tools.
 - Advertises only MCP tools in v1. Prompts, resources, roots, sampling, elicitation,
   and task-required tools are intentionally out of scope.
 
+## Install
+
+Install the latest published release from [crates.io](https://crates.io/crates/mcp-hub):
+
+```bash
+cargo install mcp-hub
+```
+
 ## Run
 
 ```bash
-cargo run -- mcp-hub.example.toml
+mcp-hub mcp-hub.example.toml
 ```
 
 The first command-line argument is the TOML configuration path. Alternatively, set
