@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - name: Check out source
@@ -63,3 +63,23 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
         run: cargo publish --locked
+      - name: Extract release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          heading="## [${version}]"
+          awk -v heading="$heading" '
+            $0 == heading || index($0, heading " ") == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          grep -q '[^[:space:]]' RELEASE_NOTES.md
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file RELEASE_NOTES.md

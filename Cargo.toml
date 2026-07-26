@@ -6,6 +6,7 @@ authors = ["Gleb Chipiga <gleb.chipiga@gmail.com>"]
 description = "Tools-only Model Context Protocol aggregation server"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/gleb-chipiga/mcp-hub"
 
 [features]
 default = ["mimalloc"]
