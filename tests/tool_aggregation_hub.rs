@@ -1382,12 +1382,15 @@ async fn spawn_hub_with_startup_timeout(
     command.env("MCP_HUB_STARTUP_TIMEOUT_MS", startup_timeout_ms.to_string());
     command.kill_on_drop(true);
 
-    let transport = TokioChildProcess::new(command).with_context(|| {
-        format!(
-            "failed to spawn hub child process from '{}'",
-            hub_binary().display()
-        )
-    })?;
+    let (transport, _) = TokioChildProcess::builder(command)
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn hub child process from '{}'",
+                hub_binary().display()
+            )
+        })?;
     ClientInfo::default()
         .serve(transport)
         .await
@@ -1404,12 +1407,15 @@ async fn spawn_hub_with_client_info(
     command.kill_on_drop(true);
 
     let protocol_version = client_info.protocol_version.clone();
-    let transport = TokioChildProcess::new(command).with_context(|| {
-        format!(
-            "failed to spawn hub child process from '{}'",
-            hub_binary().display()
-        )
-    })?;
+    let (transport, _) = TokioChildProcess::builder(command)
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn hub child process from '{}'",
+                hub_binary().display()
+            )
+        })?;
     let client: rmcp::service::RunningService<rmcp::RoleClient, ClientInfo> =
         client_info.serve(transport).await.with_context(|| {
             format!("failed to initialize hub client using protocol version '{protocol_version}'")
