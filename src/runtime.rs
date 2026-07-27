@@ -2,13 +2,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     time::Duration,
 };
 
 use rmcp::{
-    ErrorData as McpError, Peer, RoleClient, ServiceError, ServiceExt,
-    model::{CallToolRequestParams, CallToolResult, ClientInfo, TaskSupport, Tool},
-    service::ClientInitializeError,
+    ClientHandler, ErrorData as McpError, Peer, RoleClient, ServiceError, ServiceExt,
+    model::{CallToolRequestParams, CallToolResult, TaskSupport, Tool},
+    service::{ClientInitializeError, MaybeSendFuture, NotificationContext},
     transport::TokioChildProcess,
 };
 use tokio::{process::Command, sync::RwLock, task::JoinSet, time::timeout};
@@ -16,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::config::{HubConfig, ToolAnnotationOverride, UpstreamInstanceId, UpstreamServerConfig};
 
-type UpstreamService = rmcp::service::RunningService<RoleClient, ClientInfo>;
+type UpstreamService = rmcp::service::RunningService<RoleClient, UpstreamClient>;
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 5_000;
 
 /// Runtime error for routed outward tool calls.
@@ -113,6 +114,34 @@ struct RuntimeState {
 struct ActiveUpstream {
     peer: Peer<RoleClient>,
     service: UpstreamService,
+}
+
+/// Handles standard MCP notifications received from one configured upstream.
+#[derive(Clone)]
+struct UpstreamClient {
+    upstream_id: UpstreamInstanceId,
+}
+
+impl UpstreamClient {
+    /// Creates a notification handler for one configured upstream instance.
+    fn new(upstream_id: UpstreamInstanceId) -> Self {
+        Self { upstream_id }
+    }
+}
+
+impl ClientHandler for UpstreamClient {
+    /// Records an upstream inventory change without modifying the session registry.
+    fn on_tool_list_changed(
+        &self,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        warn!(
+            upstream_instance_id = %self.upstream_id,
+            notification = %"tools/list_changed",
+            "upstream reported a tool-list change; retaining the startup tool inventory"
+        );
+        std::future::ready(())
+    }
 }
 
 #[derive(Clone)]
@@ -333,13 +362,12 @@ async fn connect_upstream(
 
     let transport =
         TokioChildProcess::new(command).map_err(|source| ConnectUpstreamError::Spawn { source })?;
-    let service: UpstreamService =
-        ClientInfo::default()
-            .serve(transport)
-            .await
-            .map_err(|source| ConnectUpstreamError::Initialize {
-                source: Box::new(source),
-            })?;
+    let service: UpstreamService = UpstreamClient::new(config.instance_id.clone())
+        .serve(transport)
+        .await
+        .map_err(|source| ConnectUpstreamError::Initialize {
+            source: Box::new(source),
+        })?;
     let peer = service.peer().clone();
 
     Ok(ActiveUpstream { peer, service })

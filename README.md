@@ -135,10 +135,13 @@ start with a partial registry in those cases.
 
 This startup readiness check is not a continuous health check. `mcp-hub` does not
 retry failed startup, periodically probe upstreams, reconnect a crashed upstream, or
-refresh its tool inventory during a session. It does not set a hub-level timeout or
-retry for routed tool calls. If an already connected upstream exits, its tools remain
-listed and calls to them fail. Restarting the hub creates a new inbound session and
-new upstream sessions, which rediscover the inventory.
+refresh its tool inventory during a session. When an active upstream sends
+`notifications/tools/list_changed`, the hub logs a structured warning with its
+instance ID and retains the startup inventory without forwarding that notification.
+It does not set a hub-level timeout or retry for routed tool calls. If an already
+connected upstream exits, its tools remain listed and calls to them fail. Restarting
+the hub creates a new inbound session and new upstream sessions, which rediscover the
+inventory.
 
 When a routed tool call fails at the upstream transport or protocol layer, the hub
 emits a structured warning with the upstream instance ID, original tool name, and
@@ -278,11 +281,6 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 
 The current implementation connects to local upstream servers over stdio only.
 
-### Tool-list change notifications
-
-- Log a warning when an upstream sends `notifications/tools/list_changed`. The hub
-  will not refresh the exposed tool inventory for the current session.
-
 ### Tool-call cancellation and progress
 
 - Forward an MCP cancellation for an in-flight `tools/call` to its owning upstream.
@@ -322,8 +320,7 @@ model:
   runtime failure.
 - Task-based tools or task status tracking. The hub only exposes ordinary
   request-response `tools/call` operations.
-- `notifications/tools/list_changed` or a dynamic tool inventory within an active
-  stdio session.
+- A dynamic tool inventory within an active stdio session.
 - Pagination for `tools/list`; the hub returns the complete startup inventory in a
   single response.
 - Custom partial or streamed tool results. MCP progress notifications are sufficient

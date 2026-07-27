@@ -11,7 +11,7 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult, Meta,
         PaginatedRequestParams, ProtocolVersion, Resource, ServerCapabilities, ServerInfo,
-        TaskSupport, Tool, ToolAnnotations, ToolExecution,
+        TaskSupport, Tool, ToolAnnotations, ToolExecution, ToolsCapability,
     },
     service::{RequestContext, RoleServer},
     transport::stdio,
@@ -32,6 +32,7 @@ struct MockUpstreamServer {
     protocol_version: ProtocolVersion,
     extra_star_tool_name: Option<String>,
     termination_tool_enabled: bool,
+    tool_list_change_notification_tool_enabled: bool,
     session_counter: Arc<Mutex<u64>>,
 }
 
@@ -44,6 +45,8 @@ impl MockUpstreamServer {
             protocol_version: configured_protocol_version(),
             extra_star_tool_name: configured_star_tool_name(),
             termination_tool_enabled: termination_tool_enabled(),
+            tool_list_change_notification_tool_enabled: tool_list_change_notification_tool_enabled(
+            ),
             session_counter: Arc::new(Mutex::new(0)),
         }
     }
@@ -154,6 +157,14 @@ impl MockUpstreamServer {
             ));
         }
 
+        if self.tool_list_change_notification_tool_enabled {
+            tools.push(Tool::new(
+                "emit_tool_list_changed",
+                "Emit a tool-list change notification for hub integration tests.",
+                empty_object_schema(),
+            ));
+        }
+
         tools
     }
 }
@@ -161,12 +172,21 @@ impl MockUpstreamServer {
 impl ServerHandler for MockUpstreamServer {
     /// Describes the mock server as a tools-only MCP peer for integration tests.
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                format!("mock-upstream-{}", self.server_name),
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_protocol_version(self.protocol_version.clone())
+        let mut tools_capability = ToolsCapability::default();
+        tools_capability.list_changed = self
+            .tool_list_change_notification_tool_enabled
+            .then_some(true);
+
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools_with(tools_capability)
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            format!("mock-upstream-{}", self.server_name),
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_protocol_version(self.protocol_version.clone())
     }
 
     /// Returns the mock tool inventory used by integration coverage.
@@ -190,7 +210,7 @@ impl ServerHandler for MockUpstreamServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
             "echo" => {
@@ -271,6 +291,22 @@ impl ServerHandler for MockUpstreamServer {
             "terminate_after_startup" if self.termination_tool_enabled => {
                 std::process::exit(0);
             }
+            "emit_tool_list_changed" if self.tool_list_change_notification_tool_enabled => {
+                context
+                    .peer
+                    .notify_tool_list_changed()
+                    .await
+                    .map_err(|error| {
+                        McpError::internal_error(
+                            "failed to emit mock tool-list change notification",
+                            Some(json!({ "reason": error.to_string() })),
+                        )
+                    })?;
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "tool-list-change-notification:{}",
+                    self.server_name
+                ))]))
+            }
             "task_only" => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "task-only:{}",
                 self.server_name
@@ -339,6 +375,12 @@ fn configured_star_tool_name() -> Option<String> {
 /// Returns whether the test-only process-termination tool should be exposed.
 fn termination_tool_enabled() -> bool {
     std::env::var("MOCK_SERVER_ENABLE_TERMINATION_TOOL").is_ok_and(|value| value == "1")
+}
+
+/// Returns whether the mock-only tool-list change notification tool should be exposed.
+fn tool_list_change_notification_tool_enabled() -> bool {
+    std::env::var("MOCK_SERVER_ENABLE_TOOL_LIST_CHANGED_NOTIFICATION_TOOL")
+        .is_ok_and(|value| value == "1")
 }
 
 /// Resolves the configured server name from CLI args, environment, or the default name.

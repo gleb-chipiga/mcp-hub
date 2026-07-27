@@ -5,13 +5,18 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
 use rmcp::{
-    ServiceError, ServiceExt,
+    ClientHandler, ServiceError, ServiceExt,
     model::{CallToolRequestParams, ClientInfo, Meta, ProtocolVersion, Tool},
+    service::{MaybeSendFuture, NotificationContext},
     transport::TokioChildProcess,
 };
 use serde::Serialize;
@@ -67,6 +72,37 @@ struct TestToolOverrideConfig {
     open_world: Option<bool>,
 }
 
+/// Records unexpected tool-list change notifications forwarded by the hub.
+#[derive(Clone)]
+struct ToolListChangeRecordingClient {
+    notification_count: Arc<AtomicUsize>,
+}
+
+impl ToolListChangeRecordingClient {
+    /// Creates a client handler with no observed tool-list change notifications.
+    fn new() -> Self {
+        Self {
+            notification_count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Returns the shared count of forwarded tool-list change notifications.
+    fn notification_count(&self) -> Arc<AtomicUsize> {
+        self.notification_count.clone()
+    }
+}
+
+impl ClientHandler for ToolListChangeRecordingClient {
+    /// Records every tool-list change notification sent by the hub.
+    fn on_tool_list_changed(
+        &self,
+        _context: NotificationContext<rmcp::RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        self.notification_count.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(())
+    }
+}
+
 impl TestUpstreamConfig {
     /// Replaces the child-process command-line arguments for this test upstream.
     fn with_args(mut self, args: &[&str]) -> Self {
@@ -96,6 +132,15 @@ impl TestUpstreamConfig {
     fn with_termination_tool(mut self) -> Self {
         self.env.insert(
             "MOCK_SERVER_ENABLE_TERMINATION_TOOL".to_string(),
+            "1".to_string(),
+        );
+        self
+    }
+
+    /// Enables the mock-only tool that emits an upstream tool-list change notification.
+    fn with_tool_list_change_notification_tool(mut self) -> Self {
+        self.env.insert(
+            "MOCK_SERVER_ENABLE_TOOL_LIST_CHANGED_NOTIFICATION_TOOL".to_string(),
             "1".to_string(),
         );
         self
@@ -868,6 +913,62 @@ fn upstream_exit_after_startup_keeps_inventory_and_warns_on_routed_calls() -> Re
     })
 }
 
+/// Verifies upstream tool-list change notifications warn without refreshing the registry.
+#[test]
+fn upstream_tool_list_change_warns_without_refreshing_inventory() -> Result<()> {
+    run_async_test(async {
+        let temp_dir = TempDir::new()
+            .context("failed to create temp dir for tool-list change notification test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_tool_list_change_notification_tool(),
+            ],
+        )
+        .await?;
+        let notification_client = ToolListChangeRecordingClient::new();
+        let notification_count = notification_client.notification_count();
+        let (client, hub_stderr) =
+            spawn_hub_with_captured_stderr_and_handler(&config_path, notification_client).await?;
+
+        let inventory = tool_names(&client.list_all_tools().await?);
+        assert!(inventory.contains("alpha.emit_tool_list_changed"));
+
+        let result = client
+            .call_tool(CallToolRequestParams::new("alpha.emit_tool_list_changed"))
+            .await?;
+        assert_eq!(first_text(&result)?, "tool-list-change-notification:alpha");
+
+        let inventory_after_notification = tool_names(&client.list_all_tools().await?);
+        assert_eq!(inventory_after_notification, inventory);
+        assert_eq!(
+            notification_count.load(Ordering::SeqCst),
+            0,
+            "the hub must not forward an upstream tool-list change notification"
+        );
+
+        let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert_eq!(
+            stderr
+                .matches(
+                    "upstream reported a tool-list change; retaining the startup tool inventory"
+                )
+                .count(),
+            1,
+            "each upstream notification must emit one warning: {stderr}"
+        );
+        assert!(
+            stderr.contains("upstream_instance_id=alpha")
+                && stderr.contains("notification=tools/list_changed"),
+            "tool-list change warning is missing structured fields: {stderr}"
+        );
+        Ok(())
+    })
+}
+
 /// Verifies slow upstream inventory discovery is bounded by startup timeout and omitted.
 #[test]
 fn startup_timeout_omits_slow_upstreams() -> Result<()> {
@@ -998,6 +1099,14 @@ fn hub_advertises_only_tools_and_filters_task_required_tools() -> Result<()> {
             .peer_info()
             .expect("hub must expose peer info after initialization");
         assert!(peer_info.capabilities.tools.is_some());
+        assert_eq!(
+            peer_info
+                .capabilities
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.list_changed),
+            None
+        );
         assert!(peer_info.capabilities.prompts.is_none());
         assert!(peer_info.capabilities.resources.is_none());
         assert!(peer_info.capabilities.tasks.is_none());
@@ -1315,6 +1424,20 @@ async fn spawn_hub_with_captured_stderr(
     rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>,
     ChildStderr,
 )> {
+    spawn_hub_with_captured_stderr_and_handler(config_path, ClientInfo::default()).await
+}
+
+/// Spawns one hub child process with a custom inbound MCP client handler and captured stderr.
+async fn spawn_hub_with_captured_stderr_and_handler<Handler>(
+    config_path: &Path,
+    handler: Handler,
+) -> Result<(
+    rmcp::service::RunningService<rmcp::RoleClient, Handler>,
+    ChildStderr,
+)>
+where
+    Handler: ClientHandler,
+{
     let mut command = Command::new(hub_binary());
     command.env("MCP_HUB_CONFIG", config_path);
     command.env("NO_COLOR", "1");
@@ -1330,7 +1453,7 @@ async fn spawn_hub_with_captured_stderr(
             )
         })?;
     let stderr = stderr.context("hub child process must expose piped stderr")?;
-    let client = ClientInfo::default()
+    let client = handler
         .serve(transport)
         .await
         .context("failed to initialize hub client with captured stderr")?;
