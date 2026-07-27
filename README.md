@@ -278,7 +278,7 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 
 The current implementation connects to local upstream servers over stdio only.
 
-### Future: tool-call cancellation and progress
+### Tool-call cancellation and progress
 
 - Forward an MCP cancellation for an in-flight `tools/call` to its owning upstream.
   Cancellation will remain best effort because an upstream can already have
@@ -288,7 +288,7 @@ The current implementation connects to local upstream servers over stdio only.
   return one final result; the hub will not introduce a custom streamed-result
   protocol.
 
-### Future: upstream diagnostics
+### Upstream diagnostics
 
 - Route each upstream's stderr into structured hub tracing with its upstream
   instance ID. This diagnostic output will be enabled by default and share one
@@ -297,7 +297,7 @@ The current implementation connects to local upstream servers over stdio only.
   is too noisy. Disabled stderr will be discarded rather than written raw to the
   hub's stderr.
 
-### Future: remote upstream transports
+### Remote upstream transports
 
 Support for remote upstream MCP servers over a network transport may be added as a
 separate feature. It is not a high-availability mechanism and requires an explicit
