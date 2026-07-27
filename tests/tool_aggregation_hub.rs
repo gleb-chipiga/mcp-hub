@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
     path::{Path, PathBuf},
+    process::Stdio,
 };
 
 use anyhow::{Context, Result};
@@ -16,7 +17,11 @@ use rmcp::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::{process::Command, runtime::Runtime};
+use tokio::{
+    io::AsyncReadExt,
+    process::{ChildStderr, Command},
+    runtime::Runtime,
+};
 
 /// Serializable top-level test config for writing hub integration fixtures to TOML.
 #[derive(Serialize)]
@@ -83,6 +88,15 @@ impl TestUpstreamConfig {
         self.env.insert(
             "MOCK_SERVER_PROTOCOL_VERSION".to_string(),
             protocol_version.to_string(),
+        );
+        self
+    }
+
+    /// Enables the mock-only tool that terminates its process during one routed call.
+    fn with_termination_tool(mut self) -> Self {
+        self.env.insert(
+            "MOCK_SERVER_ENABLE_TERMINATION_TOOL".to_string(),
+            "1".to_string(),
         );
         self
     }
@@ -697,6 +711,33 @@ fn config_overrides_tool_annotations() -> Result<()> {
     })
 }
 
+/// Verifies all unavailable upstreams prevent the hub from serving an empty inventory.
+#[test]
+fn all_unavailable_upstreams_fail_startup() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for unavailable-upstream test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                unavailable_upstream("missing-one", "/definitely/not/a/real/binary-one"),
+                unavailable_upstream("missing-two", "/definitely/not/a/real/binary-two"),
+            ],
+        )
+        .await?;
+
+        let output = run_hub_startup_failure(&config_path).await?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed startup validation while building hub runtime from config")
+                && stderr.contains("no usable upstream tools remain after discovery"),
+            "unexpected startup stderr: {stderr}"
+        );
+
+        Ok(())
+    })
+}
+
 /// Verifies routed calls work and unavailable upstreams are omitted from inventory.
 #[test]
 fn routed_calls_and_partial_availability_work() -> Result<()> {
@@ -711,7 +752,7 @@ fn routed_calls_and_partial_availability_work() -> Result<()> {
             ],
         )
         .await?;
-        let client = spawn_hub(&config_path).await?;
+        let (client, hub_stderr) = spawn_hub_with_captured_stderr(&config_path).await?;
 
         let inventory = tool_names(&client.list_all_tools().await?);
         assert!(inventory.contains("alpha.echo"));
@@ -764,6 +805,65 @@ fn routed_calls_and_partial_availability_work() -> Result<()> {
         }
 
         let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert!(
+            !stderr.contains("routed upstream tool call failed"),
+            "tool-level errors must not emit routed-call failure warnings: {stderr}"
+        );
+        Ok(())
+    })
+}
+
+/// Verifies a terminated upstream keeps its fixed inventory and logs failed routing details.
+#[test]
+fn upstream_exit_after_startup_keeps_inventory_and_warns_on_routed_calls() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for upstream-exit test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_termination_tool(),
+            ],
+        )
+        .await?;
+        let (client, hub_stderr) = spawn_hub_with_captured_stderr(&config_path).await?;
+
+        let inventory = tool_names(&client.list_all_tools().await?);
+        assert!(inventory.contains("alpha.echo"));
+        assert!(inventory.contains("alpha.terminate_after_startup"));
+
+        let termination_error = client
+            .call_tool(CallToolRequestParams::new("alpha.terminate_after_startup"))
+            .await
+            .expect_err("terminating the upstream must fail the routed call");
+        assert_upstream_call_error(termination_error, "alpha", "terminate_after_startup");
+
+        let inventory_after_exit = tool_names(&client.list_all_tools().await?);
+        assert_eq!(inventory_after_exit, inventory);
+
+        let routed_error = client
+            .call_tool(CallToolRequestParams::new("alpha.echo"))
+            .await
+            .expect_err("a call to an exited upstream must fail");
+        assert_upstream_call_error(routed_error, "alpha", "echo");
+
+        let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert_eq!(
+            stderr.matches("routed upstream tool call failed").count(),
+            2,
+            "each failed routed call must emit one warning: {stderr}"
+        );
+        assert!(
+            stderr.contains("upstream_instance_id=alpha")
+                && stderr.contains("original_tool_name=echo")
+                && stderr.contains("transport_error="),
+            "routed-call warning is missing structured fields: {stderr}"
+        );
+
         Ok(())
     })
 }
@@ -1208,10 +1308,51 @@ async fn spawn_hub_with_client_info(
     Ok(client)
 }
 
+/// Spawns one hub child process, initializing a client while retaining its stderr stream.
+async fn spawn_hub_with_captured_stderr(
+    config_path: &Path,
+) -> Result<(
+    rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>,
+    ChildStderr,
+)> {
+    let mut command = Command::new(hub_binary());
+    command.env("MCP_HUB_CONFIG", config_path);
+    command.env("NO_COLOR", "1");
+    command.kill_on_drop(true);
+
+    let (transport, stderr) = TokioChildProcess::builder(command)
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn hub child process from '{}' with captured stderr",
+                hub_binary().display()
+            )
+        })?;
+    let stderr = stderr.context("hub child process must expose piped stderr")?;
+    let client = ClientInfo::default()
+        .serve(transport)
+        .await
+        .context("failed to initialize hub client with captured stderr")?;
+
+    Ok((client, stderr))
+}
+
+/// Reads all output from a hub stderr stream after its client service has stopped.
+async fn read_captured_stderr(mut stderr: ChildStderr) -> Result<String> {
+    let mut output = String::new();
+    stderr
+        .read_to_string(&mut output)
+        .await
+        .context("failed to read captured hub stderr")?;
+    Ok(output)
+}
+
 /// Runs the hub binary and captures stderr for startup-failure assertions.
 async fn run_hub_startup_failure(config_path: &Path) -> Result<std::process::Output> {
     let output = Command::new(hub_binary())
         .env("MCP_HUB_CONFIG", config_path)
+        .env("NO_COLOR", "1")
         .output()
         .await
         .with_context(|| {
@@ -1305,6 +1446,21 @@ fn unavailable_upstream(name: &str, command: &str) -> TestUpstreamConfig {
         args: Vec::new(),
         env: BTreeMap::new(),
         tools: TestToolConfig::default(),
+    }
+}
+
+/// Asserts that one routed call produced the hub's upstream-failure MCP error.
+fn assert_upstream_call_error(error: ServiceError, upstream_id: &str, tool_name: &str) {
+    match error {
+        ServiceError::McpError(error) => {
+            assert!(
+                error.message.contains(&format!(
+                    "tool '{tool_name}' failed on upstream '{upstream_id}'"
+                )),
+                "unexpected routed-call error: {error:?}"
+            );
+        }
+        other => panic!("unexpected error type: {other:?}"),
     }
 }
 

@@ -62,6 +62,9 @@ impl HubCallError {
 /// Typed error for building the per-session upstream runtime.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SessionRuntimeBuildError {
+    /// Discovery completed without leaving a route that can be exposed to the client.
+    #[error("no usable upstream tools remain after discovery")]
+    NoUsableTools,
     /// Two active upstreams produced the same outward tool name after filtering and prefixing.
     #[error(
         "outward tool name collision for '{outward_tool_name}' between upstreams '{first_upstream}' and '{second_upstream}'"
@@ -181,13 +184,19 @@ impl SessionRuntime {
         upstream_request.meta = request.meta.clone();
         upstream_request.task = request.task.clone();
 
-        peer.call_tool(upstream_request)
-            .await
-            .map_err(|source| HubCallError::UpstreamCall {
+        peer.call_tool(upstream_request).await.map_err(|source| {
+            warn!(
+                upstream_instance_id = %upstream_id,
+                original_tool_name = %original_tool_name,
+                transport_error = %source,
+                "routed upstream tool call failed"
+            );
+            HubCallError::UpstreamCall {
                 upstream_id,
                 tool_name: original_tool_name,
                 source,
-            })
+            }
+        })
     }
 
     /// Gracefully shuts down all upstream clients owned by this session.
@@ -288,6 +297,11 @@ async fn validate_startup_config(
                 );
             }
         }
+    }
+
+    if state.routes.is_empty() {
+        cancel_active_upstreams(std::mem::take(&mut state.upstreams)).await;
+        return Err(SessionRuntimeBuildError::NoUsableTools);
     }
 
     Ok(state)

@@ -128,9 +128,10 @@ upstreams can therefore delay startup by up to one timeout each.
 
 An upstream that fails to start, initialize, or list its tools is omitted from the
 current session and reported in logs. The hub continues with the remaining upstreams
-and can expose an empty tool inventory if none are available. Tool-name collisions,
-unsupported upstream tool names, and annotation overrides targeting unknown tools are
-startup errors; the hub does not start with a partial registry in those cases.
+when at least one usable tool remains after discovery. If none remain, startup fails
+with a clear error. Tool-name collisions, unsupported upstream tool names, and
+annotation overrides targeting unknown tools are also startup errors; the hub does not
+start with a partial registry in those cases.
 
 This startup readiness check is not a continuous health check. `mcp-hub` does not
 retry failed startup, periodically probe upstreams, reconnect a crashed upstream, or
@@ -138,6 +139,11 @@ refresh its tool inventory during a session. It does not set a hub-level timeout
 retry for routed tool calls. If an already connected upstream exits, its tools remain
 listed and calls to them fail. Restarting the hub creates a new inbound session and
 new upstream sessions, which rediscover the inventory.
+
+When a routed tool call fails at the upstream transport or protocol layer, the hub
+emits a structured warning with the upstream instance ID, original tool name, and
+transport error. A valid upstream tool result with `is_error: true` remains a
+tool-level result and is forwarded unchanged.
 
 When the outward MCP session ends, `mcp-hub` cancels all active upstream client
 sessions.
@@ -271,15 +277,6 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 ## Roadmap
 
 The current implementation connects to local upstream servers over stdio only.
-
-### Next: predictable upstream failure handling
-
-- Fail startup with a clear error when no usable upstream tools remain after
-  discovery. Partial upstream availability will remain supported.
-- Emit a structured warning when a routed tool call fails, including the upstream
-  instance ID, original tool name, and transport error.
-- Add integration coverage for all-upstreams-unavailable startup, partial startup
-  failure, an upstream that exits after startup, and tool-name collisions.
 
 ### Future: tool-call cancellation and progress
 

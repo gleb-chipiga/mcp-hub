@@ -31,6 +31,7 @@ struct MockUpstreamServer {
     list_tools_delay: Option<Duration>,
     protocol_version: ProtocolVersion,
     extra_star_tool_name: Option<String>,
+    termination_tool_enabled: bool,
     session_counter: Arc<Mutex<u64>>,
 }
 
@@ -42,6 +43,7 @@ impl MockUpstreamServer {
             list_tools_delay: configured_list_tools_delay(),
             protocol_version: configured_protocol_version(),
             extra_star_tool_name: configured_star_tool_name(),
+            termination_tool_enabled: termination_tool_enabled(),
             session_counter: Arc::new(Mutex::new(0)),
         }
     }
@@ -140,6 +142,14 @@ impl MockUpstreamServer {
             tools.push(Tool::new(
                 tool_name.clone(),
                 "A deliberately invalid tool name used to test startup rejection.",
+                empty_object_schema(),
+            ));
+        }
+
+        if self.termination_tool_enabled {
+            tools.push(Tool::new(
+                "terminate_after_startup",
+                "Terminate the mock process after startup for routing-failure tests.",
                 empty_object_schema(),
             ));
         }
@@ -258,6 +268,9 @@ impl ServerHandler for MockUpstreamServer {
                 self.server_name
             ))])
             .with_meta(Some(result_meta("error_result")))),
+            "terminate_after_startup" if self.termination_tool_enabled => {
+                std::process::exit(0);
+            }
             "task_only" => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "task-only:{}",
                 self.server_name
@@ -321,6 +334,11 @@ fn configured_star_tool_name() -> Option<String> {
     std::env::var("MOCK_SERVER_STAR_TOOL_NAME")
         .ok()
         .filter(|value| !value.is_empty())
+}
+
+/// Returns whether the test-only process-termination tool should be exposed.
+fn termination_tool_enabled() -> bool {
+    std::env::var("MOCK_SERVER_ENABLE_TERMINATION_TOOL").is_ok_and(|value| value == "1")
 }
 
 /// Resolves the configured server name from CLI args, environment, or the default name.
