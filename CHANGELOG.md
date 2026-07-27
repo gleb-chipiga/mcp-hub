@@ -7,10 +7,19 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - Validate OpenSpec artifacts through `prek` locally and in CI.
+- Emit a structured warning when an upstream reports `notifications/tools/list_changed`
+  while retaining the fixed tool inventory for the current session.
 
 ### Changed
 
 - Clarify the stdio single-client session model and upstream failure behavior in the README.
+- Fail startup when upstream discovery leaves no usable tool routes, while continuing
+  to support partial upstream availability.
+- Emit structured diagnostics for routed upstream transport and protocol failures.
+- Keep integration-test output quiet by suppressing ordinary child-process stderr.
+- Simplify README roadmap headings.
+- Document that upstream tool-list change notifications produce warnings without
+  refreshing or forwarding the fixed per-session inventory.
 - Migrate the project OpenSpec documents to the OpenSpec 1.6.0 baseline format.
 - Document the Conventional Commits convention for project commits.
 - Synchronize the project OpenSpec documentation with the current README.
