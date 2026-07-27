@@ -278,6 +278,11 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 
 The current implementation connects to local upstream servers over stdio only.
 
+### Tool-list change notifications
+
+- Log a warning when an upstream sends `notifications/tools/list_changed`. The hub
+  will not refresh the exposed tool inventory for the current session.
+
 ### Tool-call cancellation and progress
 
 - Forward an MCP cancellation for an in-flight `tools/call` to its owning upstream.
