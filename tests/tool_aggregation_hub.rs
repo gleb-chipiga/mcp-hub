@@ -9,6 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -23,8 +24,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
-    io::AsyncReadExt,
-    process::{ChildStderr, Command},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    process::{ChildStderr, ChildStdin, ChildStdout, Command},
     runtime::Runtime,
 };
 
@@ -141,6 +142,15 @@ impl TestUpstreamConfig {
     fn with_tool_list_change_notification_tool(mut self) -> Self {
         self.env.insert(
             "MOCK_SERVER_ENABLE_TOOL_LIST_CHANGED_NOTIFICATION_TOOL".to_string(),
+            "1".to_string(),
+        );
+        self
+    }
+
+    /// Enables mock lifecycle tools for cancellation and progress forwarding coverage.
+    fn with_lifecycle_tools(mut self) -> Self {
+        self.env.insert(
+            "MOCK_SERVER_ENABLE_LIFECYCLE_TOOLS".to_string(),
             "1".to_string(),
         );
         self
@@ -1363,6 +1373,393 @@ fn hub_preserves_structured_and_mixed_tool_results() -> Result<()> {
         let _ = client.cancel().await;
         Ok(())
     })
+}
+
+/// Verifies cancellation reaches only the upstream that owns the active routed call.
+#[test]
+fn hub_forwards_cancellation_to_the_owning_upstream() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for cancellation forwarding test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_lifecycle_tools(),
+                mock_upstream("beta")
+                    .with_prefix("beta")
+                    .with_lifecycle_tools(),
+            ],
+        )
+        .await?;
+        let mut client = spawn_raw_hub(&config_path).await?;
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": "alpha.wait_for_cancel",
+                    "arguments": {},
+                    "_meta": { "progressToken": "cancel-progress" }
+                }
+            }))
+            .await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {
+                    "requestId": 99,
+                    "reason": "client requested cancellation",
+                    "_meta": { "cancelKind": "manual" }
+                }
+            }))
+            .await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 100,
+                "method": "tools/call",
+                "params": { "name": "alpha.cancellation_status", "arguments": {} }
+            }))
+            .await?;
+
+        let alpha_messages = client.read_until_response(100).await?;
+        assert!(
+            alpha_messages
+                .iter()
+                .all(|message| message.get("id") != Some(&json!(99))),
+            "a cancelled outward call must not receive a final response: {alpha_messages:?}"
+        );
+        assert!(
+            progress_notifications(&alpha_messages).is_empty(),
+            "progress emitted after cancellation must not be forwarded: {alpha_messages:?}"
+        );
+        let alpha_cancellation =
+            response_result(&alpha_messages, 100)?["structuredContent"]["cancellation"].clone();
+        assert!(
+            alpha_cancellation["requestId"].is_number(),
+            "upstream cancellation must contain its request ID: {alpha_cancellation}"
+        );
+        assert_ne!(
+            alpha_cancellation["requestId"],
+            json!(99),
+            "the upstream cancellation must not reuse the outward request ID"
+        );
+        assert_eq!(
+            alpha_cancellation["reason"],
+            json!("client requested cancellation")
+        );
+        assert_eq!(alpha_cancellation["_meta"]["cancelKind"], json!("manual"));
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 101,
+                "method": "tools/call",
+                "params": { "name": "beta.cancellation_status", "arguments": {} }
+            }))
+            .await?;
+        let beta_messages = client.read_until_response(101).await?;
+        assert!(
+            response_result(&beta_messages, 101)?["structuredContent"]["cancellation"].is_null(),
+            "a cancellation must not be sent to an unrelated upstream"
+        );
+
+        Ok(())
+    })
+}
+
+/// Verifies the hub restores client tokens and filters unqualified or stale progress.
+#[test]
+fn hub_forwards_only_qualified_upstream_progress() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for progress forwarding test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_lifecycle_tools(),
+                mock_upstream("beta")
+                    .with_prefix("beta")
+                    .with_lifecycle_tools(),
+            ],
+        )
+        .await?;
+        let mut client = spawn_raw_hub(&config_path).await?;
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "alpha.emit_progress",
+                    "arguments": {},
+                    "_meta": { "progressToken": "alpha-token" }
+                }
+            }))
+            .await?;
+        let alpha_messages = client.read_until_response(2).await?;
+        assert_forwarded_progress(&alpha_messages, "alpha-token")?;
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "beta.emit_progress",
+                    "arguments": {},
+                    "_meta": { "progressToken": "beta-token" }
+                }
+            }))
+            .await?;
+        let beta_messages = client.read_until_response(3).await?;
+        assert_forwarded_progress(&beta_messages, "beta-token")?;
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": { "name": "alpha.emit_progress", "arguments": {} }
+            }))
+            .await?;
+        let unqualified_messages = client.read_until_response(4).await?;
+        assert!(
+            progress_notifications(&unqualified_messages).is_empty(),
+            "calls without a client progress token must not forward progress: {unqualified_messages:?}"
+        );
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "alpha.emit_unknown_progress",
+                    "arguments": {},
+                    "_meta": { "progressToken": "known-token" }
+                }
+            }))
+            .await?;
+        let unknown_messages = client.read_until_response(5).await?;
+        assert!(
+            progress_notifications(&unknown_messages).is_empty(),
+            "unknown upstream progress tokens must not be forwarded: {unknown_messages:?}"
+        );
+
+        client
+            .send_json(&json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "alpha.emit_late_progress",
+                    "arguments": {},
+                    "_meta": { "progressToken": "late-token" }
+                }
+            }))
+            .await?;
+        let late_result_messages = client.read_until_response(6).await?;
+        assert!(
+            progress_notifications(&late_result_messages).is_empty(),
+            "late progress must not arrive before the final result: {late_result_messages:?}"
+        );
+        let late_messages = client.read_for(Duration::from_millis(100)).await?;
+        assert!(
+            progress_notifications(&late_messages).is_empty(),
+            "progress after final-result cleanup must not be forwarded: {late_messages:?}"
+        );
+
+        Ok(())
+    })
+}
+
+/// Raw stdio JSON-RPC client used when a test must control request metadata exactly.
+struct RawHubClient {
+    _child: tokio::process::Child,
+    writer: ChildStdin,
+    reader: BufReader<ChildStdout>,
+}
+
+impl RawHubClient {
+    /// Sends one JSON-RPC message through the hub's stdio transport.
+    async fn send_json(&mut self, message: &Value) -> Result<()> {
+        send_json(&mut self.writer, message).await
+    }
+
+    /// Reads messages until the response for the requested numeric ID arrives.
+    async fn read_until_response(&mut self, response_id: u64) -> Result<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut messages = Vec::new();
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let message = self
+                .read_message(remaining)
+                .await?
+                .context("hub closed stdio before sending the expected response")?;
+            let is_response = message.get("id") == Some(&json!(response_id));
+            messages.push(message);
+            if is_response {
+                return Ok(messages);
+            }
+        }
+    }
+
+    /// Collects every JSON-RPC message that arrives during the supplied interval.
+    async fn read_for(&mut self, duration: Duration) -> Result<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + duration;
+        let mut messages = Vec::new();
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(messages);
+            }
+            match self.read_message(remaining).await? {
+                Some(message) => messages.push(message),
+                None => return Ok(messages),
+            }
+        }
+    }
+
+    /// Reads at most one JSON-RPC message before the requested timeout expires.
+    async fn read_message(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        let mut line = String::new();
+        let read = match tokio::time::timeout(timeout, self.reader.read_line(&mut line)).await {
+            Ok(read) => read.context("failed to read raw hub stdout")?,
+            Err(_) => return Ok(None),
+        };
+        if read == 0 {
+            return Ok(None);
+        }
+
+        serde_json::from_str(line.trim())
+            .map(Some)
+            .context("hub emitted invalid JSON-RPC on stdout")
+    }
+}
+
+/// Spawns the hub as a raw stdio JSON-RPC peer and completes MCP initialization.
+async fn spawn_raw_hub(config_path: &Path) -> Result<RawHubClient> {
+    let mut command = Command::new(hub_binary());
+    command.env("MCP_HUB_CONFIG", config_path);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::null());
+    command.kill_on_drop(true);
+
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "failed to spawn raw hub child process from '{}'",
+            hub_binary().display()
+        )
+    })?;
+    let writer = child.stdin.take().context("raw hub must expose stdin")?;
+    let stdout = child.stdout.take().context("raw hub must expose stdout")?;
+    let mut client = RawHubClient {
+        _child: child,
+        writer,
+        reader: BufReader::new(stdout),
+    };
+
+    client
+        .send_json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": ProtocolVersion::default().as_str(),
+                "capabilities": {},
+                "clientInfo": { "name": "raw-hub-test-client", "version": "0.0.0" }
+            }
+        }))
+        .await?;
+    let _ = client.read_until_response(1).await?;
+    client
+        .send_json(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .await?;
+
+    Ok(client)
+}
+
+/// Sends one newline-delimited JSON-RPC message over an async stdio writer.
+async fn send_json<W>(writer: &mut W, message: &Value) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let serialized = serde_json::to_string(message).context("failed to serialize JSON-RPC")?;
+    writer
+        .write_all(serialized.as_bytes())
+        .await
+        .context("failed to write JSON-RPC message")?;
+    writer
+        .write_all(b"\n")
+        .await
+        .context("failed to terminate JSON-RPC message")?;
+    writer
+        .flush()
+        .await
+        .context("failed to flush JSON-RPC message")?;
+    Ok(())
+}
+
+/// Returns the result payload for one expected numeric JSON-RPC response ID.
+fn response_result(messages: &[Value], response_id: u64) -> Result<&Value> {
+    messages
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(response_id)))
+        .and_then(|message| message.get("result"))
+        .with_context(|| format!("response {response_id} did not contain a result"))
+}
+
+/// Returns every standard progress notification from one batch of raw JSON-RPC messages.
+fn progress_notifications(messages: &[Value]) -> Vec<&Value> {
+    messages
+        .iter()
+        .filter(|message| message.get("method") == Some(&json!("notifications/progress")))
+        .collect()
+}
+
+/// Asserts one mock progress notification preserves the client-visible payload.
+fn assert_forwarded_progress(messages: &[Value], progress_token: &str) -> Result<()> {
+    let notifications = progress_notifications(messages);
+    assert_eq!(
+        notifications.len(),
+        1,
+        "expected exactly one forwarded progress notification: {messages:?}"
+    );
+    let params = notifications[0]
+        .get("params")
+        .context("progress notification must include params")?;
+    assert_eq!(params.get("progressToken"), Some(&json!(progress_token)));
+    assert_eq!(params.get("progress"), Some(&json!(3.0)));
+    assert_eq!(params.get("total"), Some(&json!(5.0)));
+    assert_eq!(params.get("message"), Some(&json!("mock progress")));
+    assert_eq!(
+        params["_meta"]["progressKind"],
+        json!("mock-progress"),
+        "progress metadata was not preserved: {params:?}"
+    );
+    assert_eq!(
+        params["_meta"]["emittedBy"],
+        json!("mock-upstream"),
+        "progress metadata was not preserved: {params:?}"
+    );
+    Ok(())
 }
 
 /// Spawns one hub child process and initializes a default `rmcp` client session.

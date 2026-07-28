@@ -1,14 +1,14 @@
 //! Outward MCP-facing tool-only hub server.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Implementation, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, CancelledNotificationParam, Implementation,
+        ListToolsResult, Meta, PaginatedRequestParams, ServerCapabilities, ServerInfo,
     },
-    service::{RequestContext, RoleServer},
+    service::{NotificationContext, RequestContext, RoleServer},
 };
 
 use crate::{
@@ -72,11 +72,31 @@ impl ServerHandler for HubServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         self.runtime
-            .call_tool(&request)
+            .call_tool(&request, &context)
             .await
             .map_err(|error| error.into_mcp_error())
     }
+
+    /// Forwards a cancellation for an active outward tool call to its owning upstream.
+    fn on_cancelled(
+        &self,
+        mut notification: CancelledNotificationParam,
+        context: rmcp::service::NotificationContext<RoleServer>,
+    ) -> impl Future<Output = ()> + rmcp::service::MaybeSendFuture + '_ {
+        let runtime = self.runtime.clone();
+        async move {
+            notification.meta = notification_context_meta(&context);
+            runtime.cancel_tool_call(notification).await;
+        }
+    }
+}
+
+/// Returns metadata retained by `rmcp` for one incoming notification.
+fn notification_context_meta(context: &NotificationContext<RoleServer>) -> Option<Meta> {
+    (!context.meta.0.is_empty())
+        .then(|| context.meta.clone())
+        .or_else(|| context.extensions.get::<Meta>().cloned())
 }

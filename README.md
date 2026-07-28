@@ -148,6 +148,21 @@ emits a structured warning with the upstream instance ID, original tool name, an
 transport error. A valid upstream tool result with `is_error: true` remains a
 tool-level result and is forwarded unchanged.
 
+For an active routed `tools/call`, the hub forwards a client
+`notifications/cancelled` notification only to the owning upstream. It replaces
+the outward request ID with the upstream request ID and preserves the cancellation
+reason and metadata. Cancellation is best effort: the upstream may already have
+finished or may continue working. Unknown, completed, and duplicate cancellations
+are ignored and never sent to another upstream.
+
+When the client supplies a valid `_meta.progressToken` for an active routed tool
+call, the hub forwards standard upstream `notifications/progress` notifications
+back to that client. It restores the client token while preserving the upstream
+progress value, optional total, message, and metadata. Progress without a matching
+active tokenized call, including progress after cancellation or completion, is
+ignored. Each tool call still returns one final result; the hub does not implement
+a custom streamed-result protocol.
+
 When the outward MCP session ends, `mcp-hub` cancels all active upstream client
 sessions.
 
@@ -280,16 +295,6 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 ## Roadmap
 
 The current implementation connects to local upstream servers over stdio only.
-
-### Tool-call cancellation and progress
-
-- Forward an MCP cancellation for an in-flight `tools/call` to its owning upstream.
-  Cancellation will remain best effort because an upstream can already have
-  completed the call or may not stop its work.
-- Forward standard progress notifications when an upstream emits them for an active
-  tool call and the MCP client supplied a progress token. Tool calls will still
-  return one final result; the hub will not introduce a custom streamed-result
-  protocol.
 
 ### Upstream diagnostics
 

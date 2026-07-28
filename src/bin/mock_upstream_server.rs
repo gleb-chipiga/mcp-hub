@@ -1,19 +1,21 @@
 //! Mock upstream MCP server used by integration tests.
 
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 #[path = "../telemetry.rs"]
 mod telemetry;
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    ErrorData as McpError, Peer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult, Meta,
-        PaginatedRequestParams, ProtocolVersion, Resource, ServerCapabilities, ServerInfo,
-        TaskSupport, Tool, ToolAnnotations, ToolExecution, ToolsCapability,
+        CallToolRequestParams, CallToolResult, CancelledNotificationParam, ContentBlock,
+        Extensions, Implementation, ListToolsResult, Meta, PaginatedRequestParams,
+        ProgressNotification, ProgressNotificationParam, ProgressToken, ProtocolVersion, Resource,
+        ServerCapabilities, ServerInfo, ServerNotification, TaskSupport, Tool, ToolAnnotations,
+        ToolExecution, ToolsCapability,
     },
-    service::{RequestContext, RoleServer},
+    service::{MaybeSendFuture, NotificationContext, RequestContext, RoleServer},
     transport::stdio,
 };
 use serde_json::{Value, json};
@@ -33,7 +35,9 @@ struct MockUpstreamServer {
     extra_star_tool_name: Option<String>,
     termination_tool_enabled: bool,
     tool_list_change_notification_tool_enabled: bool,
+    lifecycle_tools_enabled: bool,
     session_counter: Arc<Mutex<u64>>,
+    cancellation: Arc<Mutex<Option<CancelledNotificationParam>>>,
 }
 
 impl MockUpstreamServer {
@@ -47,7 +51,9 @@ impl MockUpstreamServer {
             termination_tool_enabled: termination_tool_enabled(),
             tool_list_change_notification_tool_enabled: tool_list_change_notification_tool_enabled(
             ),
+            lifecycle_tools_enabled: lifecycle_tools_enabled(),
             session_counter: Arc::new(Mutex::new(0)),
+            cancellation: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -163,6 +169,36 @@ impl MockUpstreamServer {
                 "Emit a tool-list change notification for hub integration tests.",
                 empty_object_schema(),
             ));
+        }
+
+        if self.lifecycle_tools_enabled {
+            tools.extend([
+                Tool::new(
+                    "wait_for_cancel",
+                    "Wait until the MCP request is cancelled for lifecycle forwarding tests.",
+                    empty_object_schema(),
+                ),
+                Tool::new(
+                    "cancellation_status",
+                    "Return the latest cancellation observed by this mock upstream.",
+                    empty_object_schema(),
+                ),
+                Tool::new(
+                    "emit_progress",
+                    "Emit one standard MCP progress notification for lifecycle forwarding tests.",
+                    empty_object_schema(),
+                ),
+                Tool::new(
+                    "emit_late_progress",
+                    "Emit one progress notification after its final result for stale-route tests.",
+                    empty_object_schema(),
+                ),
+                Tool::new(
+                    "emit_unknown_progress",
+                    "Emit progress with an uncorrelated token for lifecycle forwarding tests.",
+                    empty_object_schema(),
+                ),
+            ]);
         }
 
         tools
@@ -307,6 +343,51 @@ impl ServerHandler for MockUpstreamServer {
                     self.server_name
                 ))]))
             }
+            "wait_for_cancel" if self.lifecycle_tools_enabled => {
+                context.ct.cancelled().await;
+                emit_progress_notification(&context.peer, context.meta.get_progress_token())
+                    .await?;
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "cancelled:{}",
+                    self.server_name
+                ))]))
+            }
+            "cancellation_status" if self.lifecycle_tools_enabled => {
+                let cancellation = self.cancellation.lock().await.clone();
+                Ok(CallToolResult::structured(json!({
+                    "server": self.server_name,
+                    "cancellation": cancellation,
+                })))
+            }
+            "emit_progress" if self.lifecycle_tools_enabled => {
+                emit_progress_notification(&context.peer, context.meta.get_progress_token())
+                    .await?;
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "progress:{}",
+                    self.server_name
+                ))]))
+            }
+            "emit_late_progress" if self.lifecycle_tools_enabled => {
+                let peer = context.peer.clone();
+                let progress_token = context.meta.get_progress_token();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    let _ = emit_progress_notification(&peer, progress_token).await;
+                });
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "late-progress:{}",
+                    self.server_name
+                ))]))
+            }
+            "emit_unknown_progress" if self.lifecycle_tools_enabled => {
+                let unknown_token = serde_json::from_value(json!("mock-unknown-progress-token"))
+                    .expect("mock unknown progress token must be valid");
+                emit_progress_notification(&context.peer, Some(unknown_token)).await?;
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "unknown-progress:{}",
+                    self.server_name
+                ))]))
+            }
             "task_only" => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "task-only:{}",
                 self.server_name
@@ -319,6 +400,19 @@ impl ServerHandler for MockUpstreamServer {
                 },
                 None,
             )),
+        }
+    }
+
+    /// Records standard MCP cancellation notifications received by this mock upstream.
+    fn on_cancelled(
+        &self,
+        mut notification: CancelledNotificationParam,
+        context: NotificationContext<RoleServer>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        let cancellation = self.cancellation.clone();
+        async move {
+            notification.meta = notification_context_meta(&context);
+            *cancellation.lock().await = Some(notification);
         }
     }
 }
@@ -383,6 +477,11 @@ fn tool_list_change_notification_tool_enabled() -> bool {
         .is_ok_and(|value| value == "1")
 }
 
+/// Returns whether the mock-only lifecycle tools should be exposed.
+fn lifecycle_tools_enabled() -> bool {
+    std::env::var("MOCK_SERVER_ENABLE_LIFECYCLE_TOOLS").is_ok_and(|value| value == "1")
+}
+
 /// Resolves the configured server name from CLI args, environment, or the default name.
 fn configured_server_name() -> String {
     configured_cli_value("--server-name")
@@ -411,6 +510,37 @@ fn string_argument(request: &CallToolRequestParams, name: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+/// Sends one deterministic standard progress notification for lifecycle integration tests.
+async fn emit_progress_notification(
+    peer: &Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+) -> Result<(), McpError> {
+    let progress_token = progress_token.ok_or_else(|| {
+        McpError::invalid_params("progress token is required for mock lifecycle tool", None)
+    })?;
+    let progress = ProgressNotificationParam::new(progress_token, 3.0)
+        .with_total(5.0)
+        .with_message("mock progress");
+    let mut extensions = Extensions::new();
+    extensions.insert(progress_meta());
+    let mut notification = ProgressNotification::new(progress);
+    notification.extensions = extensions;
+    let notification = ServerNotification::ProgressNotification(notification);
+    peer.send_notification(notification).await.map_err(|error| {
+        McpError::internal_error(
+            "failed to emit mock progress notification",
+            Some(json!({ "reason": error.to_string() })),
+        )
+    })
+}
+
+/// Returns metadata retained by `rmcp` for one incoming notification.
+fn notification_context_meta(context: &NotificationContext<RoleServer>) -> Option<Meta> {
+    (!context.meta.0.is_empty())
+        .then(|| context.meta.clone())
+        .or_else(|| context.extensions.get::<Meta>().cloned())
 }
 
 /// Builds an empty JSON object schema used by mock tools without arguments.
@@ -470,6 +600,14 @@ fn tool_meta(kind: &str) -> Meta {
 fn result_meta(kind: &str) -> Meta {
     let mut meta = Meta::new();
     meta.insert("resultKind".to_string(), json!(kind));
+    meta.insert("emittedBy".to_string(), json!("mock-upstream"));
+    meta
+}
+
+/// Builds progress-notification metadata used by lifecycle forwarding tests.
+fn progress_meta() -> Meta {
+    let mut meta = Meta::new();
+    meta.insert("progressKind".to_string(), json!("mock-progress"));
     meta.insert("emittedBy".to_string(), json!("mock-upstream"));
     meta
 }
