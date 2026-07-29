@@ -29,6 +29,8 @@ pub(crate) struct UpstreamServerConfig {
     pub(crate) args: Vec<String>,
     /// Environment overrides applied to the upstream server process.
     pub(crate) env: BTreeMap<String, String>,
+    /// Whether the hub captures this upstream process's stderr through tracing.
+    pub(crate) stderr: bool,
     /// Optional outward tool-name prefix.
     pub(crate) prefix: Option<ToolPrefix>,
     /// Per-upstream tool selection and annotation-override rules.
@@ -86,6 +88,8 @@ struct RawUpstreamServerConfig {
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default = "default_stderr_enabled")]
+    stderr: bool,
     #[serde(default)]
     tools: RawUpstreamToolConfig,
 }
@@ -173,6 +177,7 @@ impl HubConfig {
                 command: server.command,
                 args: server.args,
                 env: server.env,
+                stderr: server.stderr,
                 prefix,
                 tools,
             });
@@ -180,6 +185,11 @@ impl HubConfig {
 
         Ok(Self { servers })
     }
+}
+
+/// Returns the default stderr capture policy for configured upstream processes.
+fn default_stderr_enabled() -> bool {
+    true
 }
 
 impl UpstreamServerConfig {
@@ -436,6 +446,7 @@ command = "/usr/bin/mock-server"
         assert_eq!(config.servers[0].instance_id.to_string(), "filesystem");
         assert!(config.servers[0].prefix.is_none());
         assert_eq!(config.servers[0].command, Path::new("/usr/bin/mock-server"));
+        assert!(config.servers[0].stderr);
         assert!(config.servers[0].tools.exposes_tool("echo"));
     }
 
@@ -447,6 +458,7 @@ command = "/usr/bin/mock-server"
 prefix = "gh"
 command = "/usr/bin/mock-server"
 args = ["--mode", "advanced"]
+stderr = false
 
 [servers.github.env]
 MOCK_SERVER_NAME = "github"
@@ -478,6 +490,7 @@ external = true
             server.env.get("MOCK_SERVER_NAME"),
             Some(&"github".to_string())
         );
+        assert!(!server.stderr);
         assert!(server.tools.exposes_tool("echo"));
         assert!(!server.tools.exposes_tool("duplicate"));
         assert_eq!(server.outward_tool_name("echo"), "gh.echo");
@@ -612,6 +625,7 @@ command = "/usr/bin/mock-server"
 
         let filesystem = find_server("filesystem");
         assert!(filesystem.prefix.is_none());
+        assert!(filesystem.stderr);
         assert!(filesystem.tools.exposes_tool("read_file"));
 
         let github_read = find_server("github_read");
@@ -634,6 +648,7 @@ command = "/usr/bin/mock-server"
         );
 
         let github_admin = find_server("github_admin");
+        assert!(!github_admin.stderr);
         assert_eq!(
             github_admin.prefix.as_ref().map(ToString::to_string),
             Some("gh_admin".to_string())

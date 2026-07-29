@@ -97,6 +97,9 @@ RUST_LOG=info,mcp_hub=debug mcp-hub mcp-hub.example.toml
 
 # Diagnose MCP transport behaviour as well.
 RUST_LOG=warn,mcp_hub=trace,rmcp=debug mcp-hub mcp-hub.example.toml
+
+# Keep hub logs but suppress captured upstream process diagnostics.
+RUST_LOG=info,mcp_hub::upstream_stderr=off mcp-hub mcp-hub.example.toml
 ```
 
 To retain logs when starting the binary directly, redirect standard error. The hub
@@ -111,6 +114,13 @@ When an MCP client starts `mcp-hub`, configure `RUST_LOG` in that client's proce
 environment or MCP-server entry. The `[servers.<instance_id>.env]` table in the hub
 configuration is passed only to the upstream child process; it does not configure
 the hub's own tracing.
+
+By default, the hub captures each upstream process's stderr and emits every
+diagnostic record as an `INFO` event on the `mcp_hub::upstream_stderr` target. Each
+event includes the upstream instance ID, so diagnostics from independently
+configured copies remain distinguishable. Set `stderr = false` in an individual
+server configuration to discard that child's stderr when it is too noisy; the hub
+does not write disabled output raw to its own stderr.
 
 ### Operational behavior
 
@@ -181,6 +191,7 @@ Instance IDs and prefixes may contain ASCII letters, digits, `-`, and `_`, but n
 | `command` | Yes | Executable path or command name for the upstream stdio server. |
 | `args` | No | Array of command-line arguments. Defaults to `[]`. |
 | `env` | No | Environment variables added to or overriding the child process environment. |
+| `stderr` | No | Capture child-process stderr through `mcp_hub::upstream_stderr`. Defaults to `true`; `false` discards it. |
 | `prefix` | No | Outward name prefix. A tool named `search` becomes `<prefix>.search`. |
 | `tools.include` | No | Allowlist of original upstream tool names or `*` masks. |
 | `tools.exclude` | No | Denylist used only when `include` is absent. |
@@ -295,15 +306,6 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 ## Roadmap
 
 The current implementation connects to local upstream servers over stdio only.
-
-### Upstream diagnostics
-
-- Route each upstream's stderr into structured hub tracing with its upstream
-  instance ID. This diagnostic output will be enabled by default and share one
-  `mcp_hub::upstream_stderr` target for `RUST_LOG` filtering.
-- Allow an individual upstream configuration to disable its stderr output when it
-  is too noisy. Disabled stderr will be discarded rather than written raw to the
-  hub's stderr.
 
 ### Remote upstream transports
 

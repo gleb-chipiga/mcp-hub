@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
+    process::Stdio,
     sync::Arc,
     time::Duration,
 };
@@ -22,9 +23,10 @@ use rmcp::{
     transport::TokioChildProcess,
 };
 use tokio::{
-    process::Command,
+    io::AsyncReadExt,
+    process::{ChildStderr, Command},
     sync::{Mutex, RwLock},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
     time::timeout,
 };
 use tracing::{info, warn};
@@ -33,6 +35,8 @@ use crate::config::{HubConfig, ToolAnnotationOverride, UpstreamInstanceId, Upstr
 
 type UpstreamService = rmcp::service::RunningService<RoleClient, UpstreamClient>;
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 5_000;
+const UPSTREAM_STDERR_READ_BUFFER_BYTES: usize = 8 * 1024;
+const MAX_UPSTREAM_STDERR_RECORD_BYTES: usize = 64 * 1024;
 
 /// Runtime error for routed outward tool calls.
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +133,53 @@ struct RuntimeState {
 struct ActiveUpstream {
     peer: Peer<RoleClient>,
     service: UpstreamService,
+    stderr_drain: Option<UpstreamStderrDrain>,
+}
+
+impl ActiveUpstream {
+    /// Cancels the upstream service and its associated stderr drain.
+    async fn shutdown(mut self) -> Result<(), tokio::task::JoinError> {
+        let service_result = self.service.cancel().await;
+        if let Some(mut stderr_drain) = self.stderr_drain.take() {
+            stderr_drain.stop().await;
+        }
+        service_result.map(|_| ())
+    }
+}
+
+/// Owns one stderr drain task and aborts it when the owning upstream is dropped.
+struct UpstreamStderrDrain {
+    handle: Option<JoinHandle<()>>,
+}
+
+impl UpstreamStderrDrain {
+    /// Starts asynchronously draining one upstream stderr stream.
+    fn new(upstream_id: UpstreamInstanceId, stderr: ChildStderr) -> Self {
+        Self {
+            handle: Some(tokio::spawn(drain_upstream_stderr(upstream_id, stderr))),
+        }
+    }
+
+    /// Stops the drain task and waits until Tokio has observed its cancellation.
+    async fn stop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        handle.abort();
+        if let Err(error) = handle.await
+            && !error.is_cancelled()
+        {
+            warn!(%error, "failed to join upstream stderr drain task");
+        }
+    }
+}
+
+impl Drop for UpstreamStderrDrain {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 type UpstreamProgressKey = (UpstreamInstanceId, ProgressToken);
@@ -518,6 +569,7 @@ impl SessionRuntime {
             Ok(_) => Err(ServiceError::UnexpectedResponse),
             Err(source) => Err(source),
         };
+        tokio::task::yield_now().await;
         self.in_flight_calls.complete(&outward_request_id).await;
 
         result.map_err(|source| upstream_call_error(&upstream_id, &original_tool_name, source))
@@ -600,7 +652,7 @@ async fn validate_startup_config(
                             match build_routes(upstream, active_upstream.peer.clone(), tools) {
                                 Ok(routes) => routes,
                                 Err(error) => {
-                                    let _ = active_upstream.service.cancel().await;
+                                    let _ = active_upstream.shutdown().await;
                                     cancel_active_upstreams(std::mem::take(&mut state.upstreams))
                                         .await;
                                     return Err(error);
@@ -611,7 +663,7 @@ async fn validate_startup_config(
                                 upstream = %upstream.instance_id,
                                 "upstream exposed no usable tools"
                             );
-                            let _ = active_upstream.service.cancel().await;
+                            let _ = active_upstream.shutdown().await;
                             continue;
                         }
 
@@ -623,7 +675,7 @@ async fn validate_startup_config(
                                     first_upstream: existing_route.upstream_id.to_string(),
                                     second_upstream: upstream.instance_id.to_string(),
                                 };
-                                let _ = active_upstream.service.cancel().await;
+                                let _ = active_upstream.shutdown().await;
                                 cancel_active_upstreams(std::mem::take(&mut state.upstreams)).await;
                                 return Err(collision);
                             }
@@ -643,7 +695,7 @@ async fn validate_startup_config(
                             %error,
                             "failed to list tools for upstream; omitting it from the session"
                         );
-                        let _ = active_upstream.service.cancel().await;
+                        let _ = active_upstream.shutdown().await;
                     }
                     Err(_) => {
                         warn!(
@@ -651,7 +703,7 @@ async fn validate_startup_config(
                             timeout_ms = startup_timeout.as_millis() as u64,
                             "timed out while listing tools for upstream; omitting it from the session"
                         );
-                        let _ = active_upstream.service.cancel().await;
+                        let _ = active_upstream.shutdown().await;
                     }
                 }
             }
@@ -705,17 +757,127 @@ async fn connect_upstream(
     );
     command.kill_on_drop(true);
 
-    let transport =
-        TokioChildProcess::new(command).map_err(|source| ConnectUpstreamError::Spawn { source })?;
-    let service: UpstreamService = UpstreamClient::new(config.instance_id.clone(), in_flight_calls)
-        .serve(transport)
-        .await
-        .map_err(|source| ConnectUpstreamError::Initialize {
-            source: Box::new(source),
-        })?;
+    let stderr = if config.stderr {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+    let (transport, stderr) = TokioChildProcess::builder(command)
+        .stderr(stderr)
+        .spawn()
+        .map_err(|source| ConnectUpstreamError::Spawn { source })?;
+    let mut stderr_drain =
+        stderr.map(|stderr| UpstreamStderrDrain::new(config.instance_id.clone(), stderr));
+    let service: UpstreamService =
+        match UpstreamClient::new(config.instance_id.clone(), in_flight_calls)
+            .serve(transport)
+            .await
+        {
+            Ok(service) => service,
+            Err(source) => {
+                if let Some(stderr_drain) = &mut stderr_drain {
+                    stderr_drain.stop().await;
+                }
+                return Err(ConnectUpstreamError::Initialize {
+                    source: Box::new(source),
+                });
+            }
+        };
     let peer = service.peer().clone();
 
-    Ok(ActiveUpstream { peer, service })
+    Ok(ActiveUpstream {
+        peer,
+        service,
+        stderr_drain,
+    })
+}
+
+/// Drains one upstream stderr stream and routes its diagnostics through tracing.
+async fn drain_upstream_stderr(upstream_id: UpstreamInstanceId, mut stderr: ChildStderr) {
+    let mut read_buffer = [0_u8; UPSTREAM_STDERR_READ_BUFFER_BYTES];
+    let mut record = Vec::with_capacity(UPSTREAM_STDERR_READ_BUFFER_BYTES);
+
+    loop {
+        match stderr.read(&mut read_buffer).await {
+            Ok(0) => {
+                if !record.is_empty() {
+                    emit_upstream_stderr(&upstream_id, &record, false, false);
+                }
+                return;
+            }
+            Ok(bytes_read) => {
+                append_upstream_stderr(&upstream_id, &mut record, &read_buffer[..bytes_read])
+            }
+            Err(error) => {
+                warn!(
+                    target: "mcp_hub::upstream_stderr",
+                    upstream_instance_id = %upstream_id,
+                    %error,
+                    "failed to drain upstream stderr"
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Adds one read chunk to the current stderr record while preserving line boundaries.
+fn append_upstream_stderr(upstream_id: &UpstreamInstanceId, record: &mut Vec<u8>, bytes: &[u8]) {
+    for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let line_complete = segment.ends_with(b"\n");
+        append_upstream_stderr_segment(upstream_id, record, segment, line_complete);
+    }
+}
+
+/// Appends part of one stderr line and emits bounded fragments when necessary.
+fn append_upstream_stderr_segment(
+    upstream_id: &UpstreamInstanceId,
+    record: &mut Vec<u8>,
+    mut segment: &[u8],
+    line_complete: bool,
+) {
+    while !segment.is_empty() {
+        if record.len() == MAX_UPSTREAM_STDERR_RECORD_BYTES {
+            emit_upstream_stderr(upstream_id, record, true, false);
+            record.clear();
+        }
+
+        let bytes_to_append = (MAX_UPSTREAM_STDERR_RECORD_BYTES - record.len()).min(segment.len());
+        record.extend_from_slice(&segment[..bytes_to_append]);
+        segment = &segment[bytes_to_append..];
+    }
+
+    if line_complete {
+        emit_upstream_stderr(upstream_id, record, false, true);
+        record.clear();
+    }
+}
+
+/// Emits one decoded stderr record with its owning upstream instance identifier.
+fn emit_upstream_stderr(
+    upstream_id: &UpstreamInstanceId,
+    record: &[u8],
+    continued: bool,
+    line_complete: bool,
+) {
+    let record = if line_complete {
+        record.strip_suffix(b"\n").unwrap_or(record)
+    } else {
+        record
+    };
+    let record = if line_complete {
+        record.strip_suffix(b"\r").unwrap_or(record)
+    } else {
+        record
+    };
+    let upstream_stderr = String::from_utf8_lossy(record);
+    info!(
+        target: "mcp_hub::upstream_stderr",
+        upstream_instance_id = %upstream_id,
+        %upstream_stderr,
+        continued,
+        "upstream stderr"
+    );
 }
 
 /// Rewrites usable upstream tools into outward names and captures routing metadata.
@@ -824,7 +986,7 @@ async fn cancel_active_upstreams(upstreams: BTreeMap<UpstreamInstanceId, ActiveU
     let mut cancellations = JoinSet::new();
 
     for (upstream_id, upstream) in upstreams {
-        cancellations.spawn(async move { (upstream_id, upstream.service.cancel().await) });
+        cancellations.spawn(async move { (upstream_id, upstream.shutdown().await) });
     }
 
     while let Some(result) = cancellations.join_next().await {

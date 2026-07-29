@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Capture upstream stderr as structured, filterable diagnostics with per-server opt-out.
 - Forward standard cancellation and progress notifications for routed tool calls.
 - Emit a structured warning when an upstream reports `notifications/tools/list_changed`
   while retaining the fixed tool inventory for the current session.

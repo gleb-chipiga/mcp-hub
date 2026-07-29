@@ -1,10 +1,5 @@
-# project-documentation Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Defines how the README operational behavior and roadmap remain aligned with
-implemented project behavior and planning decisions.
-## Requirements
 ### Requirement: README operational behavior stays current
 The project SHALL update the `Operational behavior` section of the README in the
 same change that alters user-visible runtime behavior, including the lifecycle

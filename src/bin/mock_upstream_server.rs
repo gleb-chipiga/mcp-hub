@@ -1,6 +1,6 @@
 //! Mock upstream MCP server used by integration tests.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, io::Write, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 #[path = "../telemetry.rs"]
@@ -419,6 +419,7 @@ impl ServerHandler for MockUpstreamServer {
 
 /// Boots tracing, builds the Tokio runtime explicitly, and runs the mock upstream server.
 fn main() -> Result<()> {
+    emit_startup_stderr()?;
     let _tracing = telemetry::init_tracing("info");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -457,6 +458,31 @@ fn configured_list_tools_delay() -> Option<Duration> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .map(Duration::from_millis)
+}
+
+/// Writes configured direct stderr output before the mock starts its MCP handshake.
+fn emit_startup_stderr() -> Result<()> {
+    let mut stderr = std::io::stderr().lock();
+
+    if let Ok(message) = std::env::var("MOCK_SERVER_STARTUP_STDERR") {
+        writeln!(stderr, "{message}").context("failed to write mock startup stderr line")?;
+    }
+
+    let byte_count = std::env::var("MOCK_SERVER_STARTUP_STDERR_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0);
+    if let Some(byte_count) = byte_count {
+        let bytes = vec![b'x'; byte_count];
+        stderr
+            .write_all(&bytes)
+            .context("failed to write mock startup stderr bytes")?;
+    }
+
+    stderr
+        .flush()
+        .context("failed to flush mock startup stderr")?;
+    Ok(())
 }
 
 /// Resolves one optional extra tool name used to test invalid literal `*` discovery.

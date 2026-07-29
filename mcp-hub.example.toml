@@ -38,6 +38,8 @@ open_world = true
 prefix = "gh_admin"
 command = "uvx"
 args = ["mcp-server-github", "--mode", "admin"]
+# Discard this instance's noisy process diagnostics instead of forwarding them to hub tracing.
+stderr = false
 env = {
   # Use a distinct resolved token for the administrative upstream when appropriate.
   GITHUB_TOKEN = "replace-with-admin-token",

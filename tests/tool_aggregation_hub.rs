@@ -47,6 +47,8 @@ struct TestUpstreamConfig {
     args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<bool>,
     #[serde(default, skip_serializing_if = "TestToolConfig::is_empty")]
     tools: TestToolConfig,
 }
@@ -156,6 +158,30 @@ impl TestUpstreamConfig {
         self
     }
 
+    /// Configures whether the hub captures this test upstream's stderr.
+    fn with_stderr(mut self, stderr: bool) -> Self {
+        self.stderr = Some(stderr);
+        self
+    }
+
+    /// Writes one deterministic startup diagnostic line from this mock upstream.
+    fn with_startup_stderr(mut self, message: &str) -> Self {
+        self.env.insert(
+            "MOCK_SERVER_STARTUP_STDERR".to_string(),
+            message.to_string(),
+        );
+        self
+    }
+
+    /// Writes a startup stderr stream with the requested number of bytes.
+    fn with_startup_stderr_bytes(mut self, bytes: usize) -> Self {
+        self.env.insert(
+            "MOCK_SERVER_STARTUP_STDERR_BYTES".to_string(),
+            bytes.to_string(),
+        );
+        self
+    }
+
     /// Replaces the per-upstream tool filtering and override config for this fixture.
     fn with_tools(mut self, tools: TestToolConfig) -> Self {
         self.tools = tools;
@@ -184,6 +210,7 @@ fn minimal_command_only_config_starts_upstream() -> Result<()> {
                 command: mock_upstream_binary().display().to_string(),
                 args: Vec::new(),
                 env: BTreeMap::new(),
+                stderr: None,
                 tools: TestToolConfig::default(),
             }],
         )
@@ -627,6 +654,7 @@ fn upstream_launch_arguments_are_forwarded() -> Result<()> {
                     command: mock_upstream_binary().display().to_string(),
                     args: Vec::new(),
                     env: BTreeMap::new(),
+                    stderr: None,
                     tools: TestToolConfig::default(),
                 }
                 .with_args(&["--server-name", "from-args"]),
@@ -979,6 +1007,140 @@ fn upstream_tool_list_change_warns_without_refreshing_inventory() -> Result<()> 
     })
 }
 
+/// Verifies upstream stderr is structured and correlated to its configured instance.
+#[test]
+fn upstream_stderr_is_structured_and_correlated() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for stderr forwarding test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_startup_stderr("alpha startup diagnostic"),
+                mock_upstream("beta")
+                    .with_prefix("beta")
+                    .with_startup_stderr("beta startup diagnostic"),
+            ],
+        )
+        .await?;
+        let (client, hub_stderr) = spawn_hub_with_captured_stderr(&config_path).await?;
+
+        let inventory = tool_names(&client.list_all_tools().await?);
+        assert!(inventory.contains("alpha.echo"));
+        assert!(inventory.contains("beta.echo"));
+
+        let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert_eq!(
+            stderr
+                .matches("upstream_stderr=alpha startup diagnostic")
+                .count(),
+            1,
+            "the alpha startup diagnostic must produce one structured event: {stderr}"
+        );
+        assert_eq!(
+            stderr
+                .matches("upstream_stderr=beta startup diagnostic")
+                .count(),
+            1,
+            "the beta startup diagnostic must produce one structured event: {stderr}"
+        );
+        assert!(
+            stderr.contains("mcp_hub::upstream_stderr")
+                && stderr.contains("upstream_instance_id=alpha")
+                && stderr.contains("upstream_stderr=alpha startup diagnostic")
+                && stderr.contains("upstream_instance_id=beta")
+                && stderr.contains("upstream_stderr=beta startup diagnostic"),
+            "upstream stderr events are missing their target, instance, or text: {stderr}"
+        );
+        Ok(())
+    })
+}
+
+/// Verifies disabled upstream stderr is discarded without affecting MCP transport.
+#[test]
+fn configured_upstream_stderr_is_discarded() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for stderr discard test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_startup_stderr("alpha visible diagnostic"),
+                mock_upstream("beta")
+                    .with_prefix("beta")
+                    .with_startup_stderr("beta discarded diagnostic")
+                    .with_stderr(false),
+            ],
+        )
+        .await?;
+        let (client, hub_stderr) = spawn_hub_with_captured_stderr(&config_path).await?;
+
+        let inventory = tool_names(&client.list_all_tools().await?);
+        assert!(inventory.contains("alpha.echo"));
+        assert!(inventory.contains("beta.echo"));
+
+        let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert!(
+            stderr.contains("alpha visible diagnostic"),
+            "enabled upstream stderr must remain visible: {stderr}"
+        );
+        assert!(
+            !stderr.contains("beta discarded diagnostic"),
+            "disabled upstream stderr must be discarded rather than inherited: {stderr}"
+        );
+        Ok(())
+    })
+}
+
+/// Verifies target filtering suppresses stderr events while the drain keeps startup live.
+#[test]
+fn filtered_upstream_stderr_is_drained_without_logging() -> Result<()> {
+    run_async_test(async {
+        let temp_dir =
+            TempDir::new().context("failed to create temp dir for stderr filtering test")?;
+        let config_path = write_config(
+            temp_dir.path(),
+            vec![
+                mock_upstream("alpha")
+                    .with_prefix("alpha")
+                    .with_startup_stderr_bytes(128 * 1024),
+            ],
+        )
+        .await?;
+        let (client, hub_stderr) = spawn_hub_with_captured_stderr_and_rust_log(
+            &config_path,
+            "info,mcp_hub::upstream_stderr=off",
+        )
+        .await?;
+
+        let inventory = tool_names(&client.list_all_tools().await?);
+        assert!(
+            inventory.contains("alpha.echo"),
+            "draining startup stderr must not block upstream initialization"
+        );
+        let result = client
+            .call_tool(CallToolRequestParams::new("alpha.echo").with_arguments(
+                rmcp::model::object(serde_json::json!({ "message": "still-serving" })),
+            ))
+            .await?;
+        assert_eq!(first_text(&result)?, "alpha:still-serving");
+
+        let _ = client.cancel().await;
+        let stderr = read_captured_stderr(hub_stderr).await?;
+        assert!(
+            !stderr.contains("mcp_hub::upstream_stderr"),
+            "RUST_LOG must suppress only the upstream stderr tracing target: {stderr}"
+        );
+        Ok(())
+    })
+}
+
 /// Verifies slow upstream inventory discovery is bounded by startup timeout and omitted.
 #[test]
 fn startup_timeout_omits_slow_upstreams() -> Result<()> {
@@ -1005,6 +1167,7 @@ fn startup_timeout_omits_slow_upstreams() -> Result<()> {
                     command: mock_upstream_binary().display().to_string(),
                     args: Vec::new(),
                     env: slow_env,
+                    stderr: None,
                     tools: TestToolConfig::default(),
                 },
             ],
@@ -1507,7 +1670,8 @@ fn hub_forwards_only_qualified_upstream_progress() -> Result<()> {
                 }
             }))
             .await?;
-        let alpha_messages = client.read_until_response(2).await?;
+        let mut alpha_messages = client.read_until_response(2).await?;
+        alpha_messages.extend(client.read_for(Duration::from_millis(100)).await?);
         assert_forwarded_progress(&alpha_messages, "alpha-token")?;
 
         client
@@ -1522,7 +1686,8 @@ fn hub_forwards_only_qualified_upstream_progress() -> Result<()> {
                 }
             }))
             .await?;
-        let beta_messages = client.read_until_response(3).await?;
+        let mut beta_messages = client.read_until_response(3).await?;
+        beta_messages.extend(client.read_for(Duration::from_millis(100)).await?);
         assert_forwarded_progress(&beta_messages, "beta-token")?;
 
         client
@@ -1830,6 +1995,22 @@ async fn spawn_hub_with_captured_stderr(
     spawn_hub_with_captured_stderr_and_handler(config_path, ClientInfo::default()).await
 }
 
+/// Spawns one hub child process with captured stderr and an explicit tracing filter.
+async fn spawn_hub_with_captured_stderr_and_rust_log(
+    config_path: &Path,
+    rust_log: &str,
+) -> Result<(
+    rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>,
+    ChildStderr,
+)> {
+    spawn_hub_with_captured_stderr_and_handler_with_rust_log(
+        config_path,
+        ClientInfo::default(),
+        Some(rust_log),
+    )
+    .await
+}
+
 /// Spawns one hub child process with a custom inbound MCP client handler and captured stderr.
 async fn spawn_hub_with_captured_stderr_and_handler<Handler>(
     config_path: &Path,
@@ -1841,9 +2022,27 @@ async fn spawn_hub_with_captured_stderr_and_handler<Handler>(
 where
     Handler: ClientHandler,
 {
+    spawn_hub_with_captured_stderr_and_handler_with_rust_log(config_path, handler, None).await
+}
+
+/// Spawns one hub child process with a custom handler, captured stderr, and optional filter.
+async fn spawn_hub_with_captured_stderr_and_handler_with_rust_log<Handler>(
+    config_path: &Path,
+    handler: Handler,
+    rust_log: Option<&str>,
+) -> Result<(
+    rmcp::service::RunningService<rmcp::RoleClient, Handler>,
+    ChildStderr,
+)>
+where
+    Handler: ClientHandler,
+{
     let mut command = Command::new(hub_binary());
     command.env("MCP_HUB_CONFIG", config_path);
     command.env("NO_COLOR", "1");
+    if let Some(rust_log) = rust_log {
+        command.env("RUST_LOG", rust_log);
+    }
     command.kill_on_drop(true);
 
     let (transport, stderr) = TokioChildProcess::builder(command)
@@ -1943,6 +2142,7 @@ fn mock_upstream(name: &str) -> TestUpstreamConfig {
         command: mock_upstream_binary().display().to_string(),
         args: Vec::new(),
         env,
+        stderr: None,
         tools: TestToolConfig::default(),
     }
 }
@@ -1971,6 +2171,7 @@ fn unavailable_upstream(name: &str, command: &str) -> TestUpstreamConfig {
         command: command.to_string(),
         args: Vec::new(),
         env: BTreeMap::new(),
+        stderr: None,
         tools: TestToolConfig::default(),
     }
 }

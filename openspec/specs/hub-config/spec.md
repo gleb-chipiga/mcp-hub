@@ -2,9 +2,7 @@
 
 Defines the TOML configuration contract for local upstream servers, including
 launch settings, tool selection, naming, and metadata overrides.
-
 ## Requirements
-
 ### Requirement: Hub uses a TOML 1.1 configuration surface for upstream stdio servers
 The hub SHALL load its upstream stdio server definitions from a documented TOML 1.1 configuration file.
 
@@ -89,3 +87,17 @@ The hub SHALL allow the configuration to start multiple copies of the same under
 #### Scenario: Multiple copies of one upstream binary with different prefixes
 - **WHEN** two configured upstream entries point to the same executable but use different arguments or prefixes
 - **THEN** the hub treats them as separate upstream instances and exposes their tool sets independently
+
+### Requirement: Hub controls per-upstream stderr diagnostics
+The hub SHALL support an optional `stderr` boolean on each
+`[servers.<instance_id>]` configuration table. It SHALL default to `true` when
+omitted; `false` SHALL discard that upstream process's stderr.
+
+#### Scenario: Omitted stderr setting enables diagnostics
+- **WHEN** an upstream configuration omits `stderr`
+- **THEN** the hub treats stderr diagnostics as enabled for that upstream
+
+#### Scenario: Explicit false disables one upstream's diagnostics
+- **WHEN** an upstream configuration sets `stderr = false`
+- **THEN** the hub discards that child process's stderr
+- **AND** the setting does not change stderr behavior for any other configured upstream
