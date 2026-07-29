@@ -14,6 +14,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Document current MCP protocol compatibility and planned modern protocol support.
 - Fail startup when upstream discovery leaves no usable tool routes, while continuing
   to support partial upstream availability.
 - Emit structured diagnostics for routed upstream transport and protocol failures.

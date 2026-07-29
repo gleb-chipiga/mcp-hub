@@ -28,8 +28,8 @@ instances let the same upstream run with different settings.
 - Allows several independently configured instances of the same upstream binary, with
   different arguments, environment variables, prefixes, and tool filters; unavailable
   or slow upstreams do not take down the remaining inventory.
-- Advertises only MCP tools. Prompts, resources, roots, sampling, elicitation, and
-  task-required tools are intentionally out of scope.
+- Advertises only MCP tools. Prompts, resources, roots, sampling, and elicitation
+  are out of scope; the MCP Tasks extension is not currently supported.
 
 ## Install
 
@@ -77,6 +77,22 @@ mcp-hub mcp-hub.example.toml
 The first command-line argument is the TOML configuration path. Alternatively, set
 `MCP_HUB_CONFIG`. The hub speaks MCP over standard input/output and writes tracing
 logs to standard error.
+
+### Protocol compatibility
+
+The current implementation is stdio-only and uses the legacy `initialize`
+lifecycle. Downstream clients may use `2024-11-05`, `2025-03-26`, `2025-06-18`,
+`2025-11-25` (the default), or `2026-07-28`; unknown future versions fall back to
+`2025-11-25`.
+
+`2026-07-28` is accepted only through the legacy lifecycle. Its stateless
+`server/discover` flow, multi round-trip requests, and Tasks extension are not
+supported.
+
+Upstreams must be stdio servers that support legacy initialization, `tools/list`,
+and `tools/call`. The hub connects to them using `2025-11-25` by default, with no
+discovery fallback; stateless-only `2026-07-28` and remote HTTP upstreams are not
+compatible.
 
 ### Logging and tracing
 
@@ -307,6 +323,15 @@ See [mcp-hub.example.toml](mcp-hub.example.toml) for a compact combined example.
 
 The current implementation connects to local upstream servers over stdio only.
 
+### Modern MCP protocol support
+
+Update the protocol implementation for the newer MCP lifecycle and features:
+
+- Stateless `server/discover` negotiation with legacy initialization fallback.
+- Per-request protocol-version and capability metadata.
+- Standard multi round-trip tool calls.
+- The official MCP Tasks extension, including task status and lifecycle proxying.
+
 ### Remote upstream transports
 
 Support for remote upstream MCP servers over a network transport may be added as a
@@ -325,8 +350,6 @@ model:
 - Automatic tool-call timeouts that change call behaviour.
 - Removing, adding, or otherwise refreshing tools in the advertised registry after a
   runtime failure.
-- Task-based tools or task status tracking. The hub only exposes ordinary
-  request-response `tools/call` operations.
 - A dynamic tool inventory within an active stdio session.
 - Pagination for `tools/list`; the hub returns the complete startup inventory in a
   single response.
